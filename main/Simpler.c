@@ -4,11 +4,25 @@
 #include "freertos/task.h"
 #include "esp_log.h"
 #include "driver/i2c_master.h"
+#include "driver/gpio.h"
+#include "math.h"
+#include "esp_err.h"
+#include "string.h"
+#include "esp_system.h"
+#include "esp_sleep.h"
+#include "driver/adc.h"
+#include "esp_adc_cal.h"
+#include "esp_check.h"
+#include "esp_timer.h"
+#include "esp_heap_caps.h"
+#include "esp_rom_gpio.h"
+#include "esp_mac.h"
 
 static const char *TAG = "ADXL345";
 
 #define I2C_MASTER_SCL_IO           9 //CONFIG_I2C_MASTER_SCL
 #define I2C_MASTER_SDA_IO           8 //CONFIG_I2C_MASTER_SDA
+#define LED_GPIO                    2 //CONFIG_LED_GPIO
 #define I2C_MASTER_NUM              I2C_NUM_0
 #define I2C_MASTER_FREQ_HZ          100000
 #define I2C_MASTER_TIMEOUT_MS       1000
@@ -21,6 +35,10 @@ static const char *TAG = "ADXL345";
 
 #define ADXL345_DEVID_EXPECTED      0xE5
 #define LSB_TO_G                    0.0039f  // 3.9 mg/LSB for ±2g range
+
+#define THRESH_SEVERE_G             1.0f
+#define THRESH_MODERATE_G           0.5f
+
 
 static esp_err_t adxl345_register_read(i2c_master_dev_handle_t dev_handle, uint8_t reg_addr, uint8_t *data, size_t len)
 {
@@ -53,6 +71,18 @@ static void i2c_master_init(i2c_master_bus_handle_t *bus_handle, i2c_master_dev_
     ESP_ERROR_CHECK(i2c_master_bus_add_device(*bus_handle, &dev_config, dev_handle));
 }
 
+static const char* infer_impact_type(float ax,float ay,float az,float mag){
+    if(mag>THRESH_SEVERE_G && az<-1.0f && fabsf(az)>fabsf(ax) && fabsf(az)>fabsf(ay)) return "fall";
+    if(mag>THRESH_MODERATE_G && fabsf(ax)>1.0f && fabsf(ay)>1.0f && fabsf(az)>1.0f) return "collapse";
+    if(mag>THRESH_MODERATE_G) return "blunt";
+    return "none";
+}
+
+static void init_led(void){
+    gpio_config_t io_conf = {.pin_bit_mask=1ULL<<LED_GPIO,.mode=GPIO_MODE_OUTPUT,.pull_up_en=0,.pull_down_en=0,.intr_type=GPIO_INTR_DISABLE};
+    gpio_config(&io_conf);
+    gpio_set_level(LED_GPIO,0);
+}
 
 void app_main(void)
 {
@@ -87,7 +117,9 @@ void app_main(void)
     while (1) {
         // Read 6 bytes of acceleration data
         ESP_ERROR_CHECK(adxl345_register_read(dev_handle, ADXL345_DATAX0_REG, data, 6));
-
+        init_led();
+        gpio_set_level(LED_GPIO,1);
+    
         int16_t x_raw = (int16_t)((data[1] << 8) | data[0]);
         int16_t y_raw = (int16_t)((data[3] << 8) | data[2]);
         int16_t z_raw = (int16_t)((data[5] << 8) | data[4]);
@@ -102,10 +134,17 @@ void app_main(void)
         }
         if(x_g > 1.0f || x_g < -1.0f || y_g > 1.0f || y_g < -1.0f || z_g > 1.0f || z_g < -1.0f){
             ESP_LOGW(TAG, "Major Impact!");
+            gpio_set_level(LED_GPIO,0);
+        }
+        float mag = sqrtf(x_g*x_g+y_g*y_g+z_g*z_g);
+        const char* impact_type = infer_impact_type(x_g,y_g,z_g,mag);
+        if(impact_type!="none"){
+            ESP_LOGE(TAG, "Impact detected! Type: %s, Magnitude: %.3f g", impact_type, mag);
         }
 
         vTaskDelay(pdMS_TO_TICKS(100));
     }
+
 
     // Clean up (never reached in this loop)
     ESP_ERROR_CHECK(i2c_master_bus_rm_device(dev_handle));

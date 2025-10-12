@@ -16,5 +16,8 @@
     "--query-driver=C:\\Users\\vinni\\.espressif\\tools\\riscv32-esp-elf\\esp-14.2.0_20241119\\riscv32-esp-elf\\bin\\riscv32-esp-elf-gcc.exe",
     "--compile-commands-dir=c:\\Users\\vinni\\project-name\\build"
   ],
-  "idf.flashType": "UART"
+  "idf.flashType": "UART",
+  "files.associations": {
+    "esp_rom_gpio.h": "c"
+  }
 }
