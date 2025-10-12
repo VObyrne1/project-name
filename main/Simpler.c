@@ -93,6 +93,22 @@ static void flash_led(int GPIO){
     }
 }
 
+static void classify_impact(float x_g, float y_g, float z_g, float mag){
+    if(x_g > 0.5f || x_g < -0.5f || y_g > 0.5f || y_g < -0.5f || z_g > 0.5f || z_g < -0.5f){
+            ESP_LOGW(TAG, "Minor Impact!");
+    }
+    if(x_g > 1.0f || x_g < -1.0f || y_g > 1.0f || y_g < -1.0f || z_g > 1.0f || z_g < -1.0f){
+            ESP_LOGW(TAG, "Major Impact!");
+            flash_led(LED_GPIO);
+    }
+        
+    mag=sqrtf(x_g*x_g+y_g*y_g+z_g*z_g);
+    const char* impact_type = infer_impact_type(x_g,y_g,z_g,mag);
+    if(impact_type!="none"){
+        ESP_LOGE(TAG, "Impact detected! Type: %s, Magnitude: %.3f g", impact_type, mag);
+    }
+}
+
 void app_main(void)
 {
     uint8_t data[6];
@@ -137,7 +153,10 @@ void app_main(void)
         float x_g = x_raw * LSB_TO_G;
         float y_g = y_raw * LSB_TO_G;
         float z_g = z_raw * LSB_TO_G-1.0f;//gravity 
-
+        
+        
+        ESP_LOGI(TAG, "X=%.3f g, Y=%.3f g, Z=%.3f g", x_g, y_g, z_g);
+        /*
         ESP_LOGI(TAG, "X=%.3f g, Y=%.3f g, Z=%.3f g", x_g, y_g, z_g);
         if(x_g > 0.5f || x_g < -0.5f || y_g > 0.5f || y_g < -0.5f || z_g > 0.5f || z_g < -0.5f){
             ESP_LOGW(TAG, "Minor Impact!");
@@ -146,12 +165,13 @@ void app_main(void)
             ESP_LOGW(TAG, "Major Impact!");
             flash_led(LED_GPIO);
         }
-
+        
         float mag = sqrtf(x_g*x_g+y_g*y_g+z_g*z_g);
         const char* impact_type = infer_impact_type(x_g,y_g,z_g,mag);
         if(impact_type!="none"){
             ESP_LOGE(TAG, "Impact detected! Type: %s, Magnitude: %.3f g", impact_type, mag);
-        }
+        }*/
+        
 
         vTaskDelay(pdMS_TO_TICKS(100));
     }
