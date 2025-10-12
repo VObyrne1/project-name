@@ -81,7 +81,16 @@ static const char* infer_impact_type(float ax,float ay,float az,float mag){
 static void init_led(void){
     gpio_config_t io_conf = {.pin_bit_mask=1ULL<<LED_GPIO,.mode=GPIO_MODE_OUTPUT,.pull_up_en=0,.pull_down_en=0,.intr_type=GPIO_INTR_DISABLE};
     gpio_config(&io_conf);
-    gpio_set_level(LED_GPIO,0);
+    gpio_set_level(LED_GPIO,1);
+}
+
+static void flash_led(int GPIO){
+    for(int i=0;i<5;i++){
+        gpio_set_level(GPIO,1);
+        vTaskDelay(pdMS_TO_TICKS(100));
+        gpio_set_level(GPIO,0);
+        vTaskDelay(pdMS_TO_TICKS(100));
+    }
 }
 
 void app_main(void)
@@ -113,12 +122,13 @@ void app_main(void)
 
     // Set data format: Full resolution, ±2g range (0x08)
     ESP_ERROR_CHECK(adxl345_register_write_byte(dev_handle, ADXL345_DATA_FORMAT_REG, 0x08));
+    init_led();
 
     while (1) {
         // Read 6 bytes of acceleration data
         ESP_ERROR_CHECK(adxl345_register_read(dev_handle, ADXL345_DATAX0_REG, data, 6));
-        init_led();
-        gpio_set_level(LED_GPIO,1);
+        
+        //gpio_set_level(LED_GPIO,1);
     
         int16_t x_raw = (int16_t)((data[1] << 8) | data[0]);
         int16_t y_raw = (int16_t)((data[3] << 8) | data[2]);
@@ -134,8 +144,9 @@ void app_main(void)
         }
         if(x_g > 1.0f || x_g < -1.0f || y_g > 1.0f || y_g < -1.0f || z_g > 1.0f || z_g < -1.0f){
             ESP_LOGW(TAG, "Major Impact!");
-            gpio_set_level(LED_GPIO,0);
+            flash_led(LED_GPIO);
         }
+
         float mag = sqrtf(x_g*x_g+y_g*y_g+z_g*z_g);
         const char* impact_type = infer_impact_type(x_g,y_g,z_g,mag);
         if(impact_type!="none"){
