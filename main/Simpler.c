@@ -71,13 +71,6 @@ static void i2c_master_init(i2c_master_bus_handle_t *bus_handle, i2c_master_dev_
     ESP_ERROR_CHECK(i2c_master_bus_add_device(*bus_handle, &dev_config, dev_handle));
 }
 
-static const char* infer_impact_type(float ax,float ay,float az,float mag){
-    if(mag>THRESH_SEVERE_G && az<-1.0f && fabsf(az)>fabsf(ax) && fabsf(az)>fabsf(ay)) return "fall";
-    if(mag>THRESH_MODERATE_G && fabsf(ax)>1.0f && fabsf(ay)>1.0f && fabsf(az)>1.0f) return "collapse";
-    if(mag>THRESH_MODERATE_G) return "blunt";
-    return "none";
-}
-
 static void init_led(void){
     gpio_config_t io_conf = {.pin_bit_mask=1ULL<<LED_GPIO,.mode=GPIO_MODE_OUTPUT,.pull_up_en=0,.pull_down_en=0,.intr_type=GPIO_INTR_DISABLE};
     gpio_config(&io_conf);
@@ -93,11 +86,18 @@ static void flash_led(int GPIO){
     }
 }
 
+static const char* infer_impact_type(float ax,float ay,float az,float mag){
+    if(mag>THRESH_SEVERE_G && az<-1.0f && fabsf(az)>fabsf(ax) && fabsf(az)>fabsf(ay)) return "fall";
+    if(mag>THRESH_MODERATE_G && fabsf(ax)>1.0f && fabsf(ay)>1.0f && fabsf(az)>1.0f) return "collapse";
+    if(mag>THRESH_MODERATE_G) return "blunt";
+    return "none";
+}
+
 static void classify_impact(float x_g, float y_g, float z_g, float mag){
-    if(x_g > 0.5f || x_g < -0.5f || y_g > 0.5f || y_g < -0.5f || z_g > 0.5f || z_g < -0.5f){
+    if(x_g > THRESH_MODERATE_G || x_g < -THRESH_MODERATE_G || y_g > THRESH_MODERATE_G || y_g < -THRESH_MODERATE_G || z_g > THRESH_MODERATE_G || z_g < -THRESH_MODERATE_G){
             ESP_LOGW(TAG, "Minor Impact!");
     }
-    if(x_g > 1.0f || x_g < -1.0f || y_g > 1.0f || y_g < -1.0f || z_g > 1.0f || z_g < -1.0f){
+    if(x_g > THRESH_SEVERE_G || x_g < -THRESH_SEVERE_G || y_g > THRESH_SEVERE_G || y_g < -THRESH_SEVERE_G || z_g > THRESH_SEVERE_G || z_g < -THRESH_SEVERE_G){
             ESP_LOGW(TAG, "Major Impact!");
             flash_led(LED_GPIO);
     }
@@ -156,6 +156,7 @@ void app_main(void)
         
         
         ESP_LOGI(TAG, "X=%.3f g, Y=%.3f g, Z=%.3f g", x_g, y_g, z_g);
+        classify_impact(x_g, y_g, z_g);
         /*
         ESP_LOGI(TAG, "X=%.3f g, Y=%.3f g, Z=%.3f g", x_g, y_g, z_g);
         if(x_g > 0.5f || x_g < -0.5f || y_g > 0.5f || y_g < -0.5f || z_g > 0.5f || z_g < -0.5f){
