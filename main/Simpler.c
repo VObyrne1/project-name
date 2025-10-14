@@ -23,6 +23,7 @@ static const char *TAG = "ADXL345";
 #define I2C_MASTER_SCL_IO           9 //CONFIG_I2C_MASTER_SCL
 #define I2C_MASTER_SDA_IO           8 //CONFIG_I2C_MASTER_SDA
 #define LED_GPIO                    2 //CONFIG_LED_GPIO
+#define BUTTON_GPIO                 10 //CONFIG_BUTTON_GPIO
 #define I2C_MASTER_NUM              I2C_NUM_0
 #define I2C_MASTER_FREQ_HZ          100000
 #define I2C_MASTER_TIMEOUT_MS       1000
@@ -38,6 +39,9 @@ static const char *TAG = "ADXL345";
 
 #define THRESH_SEVERE_G             1.0f
 #define THRESH_MODERATE_G           0.5f
+
+static TimerHandle_t major_impact_timer;
+static bool major_impact_active = false;
 
 
 static esp_err_t adxl345_register_read(i2c_master_dev_handle_t dev_handle, uint8_t reg_addr, uint8_t *data, size_t len)
@@ -93,20 +97,37 @@ static const char* infer_impact_type(float ax,float ay,float az,float mag){
     return "none";
 }
 
-static void classify_impact(float x_g, float y_g, float z_g, float mag){
+static void classify_impact(float x_g, float y_g, float z_g){
     if(x_g > THRESH_MODERATE_G || x_g < -THRESH_MODERATE_G || y_g > THRESH_MODERATE_G || y_g < -THRESH_MODERATE_G || z_g > THRESH_MODERATE_G || z_g < -THRESH_MODERATE_G){
             ESP_LOGW(TAG, "Minor Impact!");
     }
     if(x_g > THRESH_SEVERE_G || x_g < -THRESH_SEVERE_G || y_g > THRESH_SEVERE_G || y_g < -THRESH_SEVERE_G || z_g > THRESH_SEVERE_G || z_g < -THRESH_SEVERE_G){
-            ESP_LOGW(TAG, "Major Impact!");
+            ESP_LOGW(TAG, "Major Impact Detected: Starting Timer!");
+            if(!major_impact_active){
+                major_impact_active=true;
+                xTimerStart(major_impact_timer,0);
+            }
             flash_led(LED_GPIO);
     }
         
-    mag=sqrtf(x_g*x_g+y_g*y_g+z_g*z_g);
+    float mag=sqrtf(x_g*x_g+y_g*y_g+z_g*z_g);
     const char* impact_type = infer_impact_type(x_g,y_g,z_g,mag);
     if(impact_type!="none"){
         ESP_LOGE(TAG, "Impact detected! Type: %s, Magnitude: %.3f g", impact_type, mag);
     }
+}
+
+static void button_handler(void* arg){
+     if(major_impact_active) {
+        xTimerStopFromISR(major_impact_timer, NULL);
+        major_impact_active = false;
+        ESP_LOGI(TAG, "Major impact warning cancelled by button!");
+    }
+}
+static void major_impact_timer_callback(TimerHandle_t xTimer){
+    ESP_LOGW(TAG, "Major impact! WARNING!");
+    flash_led(LED_GPIO);
+    major_impact_active=false;
 }
 
 void app_main(void)
@@ -140,6 +161,24 @@ void app_main(void)
     ESP_ERROR_CHECK(adxl345_register_write_byte(dev_handle, ADXL345_DATA_FORMAT_REG, 0x08));
     init_led();
 
+    // Configure button input
+    gpio_config_t io_conf = {
+        .pin_bit_mask = 1ULL << BUTTON_GPIO,
+        .mode = GPIO_MODE_INPUT,
+        .pull_up_en = 1,   // enable pull-up
+        .pull_down_en = 0,
+        .intr_type = GPIO_INTR_NEGEDGE, // falling edge
+    };
+    gpio_config(&io_conf);
+
+    // Install ISR
+    gpio_install_isr_service(0);
+    gpio_isr_handler_add(BUTTON_GPIO, button_handler, NULL);
+
+    // Create major impact timer (15 sec)
+    major_impact_timer = xTimerCreate("MajorImpactTimer", pdMS_TO_TICKS(15000), pdFALSE, NULL, major_impact_timer_callback);
+
+    
     while (1) {
         // Read 6 bytes of acceleration data
         ESP_ERROR_CHECK(adxl345_register_read(dev_handle, ADXL345_DATAX0_REG, data, 6));
