@@ -83,9 +83,9 @@ static void init_led(void){
 
 static void flash_led(int GPIO){
     for(int i=0;i<100;i++){
-        gpio_set_level(GPIO,1);
-        vTaskDelay(pdMS_TO_TICKS(100));
         gpio_set_level(GPIO,0);
+        vTaskDelay(pdMS_TO_TICKS(100));
+        gpio_set_level(GPIO,1);
         vTaskDelay(pdMS_TO_TICKS(100));
     }
 }
