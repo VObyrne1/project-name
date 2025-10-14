@@ -23,7 +23,7 @@ static const char *TAG = "ADXL345";
 #define I2C_MASTER_SCL_IO           9 //CONFIG_I2C_MASTER_SCL
 #define I2C_MASTER_SDA_IO           8 //CONFIG_I2C_MASTER_SDA
 #define LED_GPIO                    2 //CONFIG_LED_GPIO
-#define BUTTON_GPIO                 10 //CONFIG_BUTTON_GPIO
+#define BUTTON_GPIO                 15 //CONFIG_BUTTON_GPIO
 #define I2C_MASTER_NUM              I2C_NUM_0
 #define I2C_MASTER_FREQ_HZ          100000
 #define I2C_MASTER_TIMEOUT_MS       1000
@@ -82,7 +82,7 @@ static void init_led(void){
 }
 
 static void flash_led(int GPIO){
-    for(int i=0;i<5;i++){
+    for(int i=0;i<100;i++){
         gpio_set_level(GPIO,1);
         vTaskDelay(pdMS_TO_TICKS(100));
         gpio_set_level(GPIO,0);
@@ -112,7 +112,7 @@ static void classify_impact(float x_g, float y_g, float z_g){
         
     float mag=sqrtf(x_g*x_g+y_g*y_g+z_g*z_g);
     const char* impact_type = infer_impact_type(x_g,y_g,z_g,mag);
-    if(impact_type!="none"){
+    if(strcmp(impact_type, "none")!=0){
         ESP_LOGE(TAG, "Impact detected! Type: %s, Magnitude: %.3f g", impact_type, mag);
     }
 }
