@@ -24,6 +24,8 @@ static const char *TAG = "ADXL345";
 #define I2C_MASTER_SDA_IO           8 //CONFIG_I2C_MASTER_SDA
 #define LED_GPIO                    2 //CONFIG_LED_GPIO
 #define BUTTON_GPIO                 15 //CONFIG_BUTTON_GPIO
+#define BUZZER_GPIO                 12 //CONFIG_BUZZER_GPIO
+
 #define I2C_MASTER_NUM              I2C_NUM_0
 #define I2C_MASTER_FREQ_HZ          100000
 #define I2C_MASTER_TIMEOUT_MS       1000
@@ -82,7 +84,7 @@ static void init_led(void){
 }
 
 static void flash_led(int GPIO){
-    for(int i=0;i<100;i++){
+    for(int i=0;i<50;i++){
         gpio_set_level(GPIO,0);
         vTaskDelay(pdMS_TO_TICKS(100));
         gpio_set_level(GPIO,1);
@@ -91,8 +93,8 @@ static void flash_led(int GPIO){
 }
 
 static const char* infer_impact_type(float ax,float ay,float az,float mag){
-    if(mag>THRESH_SEVERE_G && az<-1.0f && fabsf(az)>fabsf(ax) && fabsf(az)>fabsf(ay)) return "fall";
-    if(mag>THRESH_MODERATE_G && fabsf(ax)>1.0f && fabsf(ay)>1.0f && fabsf(az)>1.0f) return "collapse";
+    if(mag>THRESH_SEVERE_G && az<-1.0f && fabsf(az)>fabsf(ax) && fabsf(az)>fabsf(ay)) return "Fall";
+    if(mag>THRESH_MODERATE_G && fabsf(ax)>0.5f && fabsf(ay)>0.5f && fabsf(az)>0.5f) return "Ceiling Collapse";
     if(mag>THRESH_MODERATE_G) return "blunt";
     return "none";
 }
@@ -108,6 +110,8 @@ static void classify_impact(float x_g, float y_g, float z_g){
                 xTimerStart(major_impact_timer,0);
             }
             flash_led(LED_GPIO);
+            //buzzer_control(BUZZER_GPIO);
+            gpio_set_level(LED_GPIO,0); //ensure LED off after flash
     }
         
     float mag=sqrtf(x_g*x_g+y_g*y_g+z_g*z_g);
@@ -124,10 +128,21 @@ static void button_handler(void* arg){
         ESP_LOGI(TAG, "Major impact warning cancelled by button!");
     }
 }
+
 static void major_impact_timer_callback(TimerHandle_t xTimer){
     ESP_LOGW(TAG, "Major impact! WARNING!");
-    flash_led(LED_GPIO);
+    //flash_led(LED_GPIO);
+    gpio_set_level(LED_GPIO,0); 
     major_impact_active=false;
+}
+
+static void buzzer_control(int GPIO){
+    for(int i=0;i<50;i++){
+        gpio_set_level(GPIO,0);
+        vTaskDelay(pdMS_TO_TICKS(10));
+        gpio_set_level(GPIO,1);
+        vTaskDelay(pdMS_TO_TICKS(10));
+    }
 }
 
 void app_main(void)
