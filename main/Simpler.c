@@ -92,6 +92,15 @@ static void flash_led(int GPIO){
     }
 }
 
+static void buzzer_control(int GPIO){
+    for(int i=0;i<500;i++){
+        gpio_set_level(GPIO,0);
+        vTaskDelay(pdMS_TO_TICKS(10));
+        gpio_set_level(GPIO,1);
+        vTaskDelay(pdMS_TO_TICKS(10));
+    }
+}
+
 static const char* infer_impact_type(float ax,float ay,float az,float mag){
     if(mag>THRESH_SEVERE_G && az<-1.0f && fabsf(az)>fabsf(ax) && fabsf(az)>fabsf(ay)) return "Fall";
     if(mag>THRESH_MODERATE_G && fabsf(ax)>0.5f && fabsf(ay)>0.5f && fabsf(az)>0.5f) return "Ceiling Collapse";
@@ -110,7 +119,7 @@ static void classify_impact(float x_g, float y_g, float z_g){
                 xTimerStart(major_impact_timer,0);
             }
             flash_led(LED_GPIO);
-            //buzzer_control(BUZZER_GPIO);
+            buzzer_control(BUZZER_GPIO);
             gpio_set_level(LED_GPIO,0); //ensure LED off after flash
     }
         
@@ -136,14 +145,6 @@ static void major_impact_timer_callback(TimerHandle_t xTimer){
     major_impact_active=false;
 }
 
-static void buzzer_control(int GPIO){
-    for(int i=0;i<50;i++){
-        gpio_set_level(GPIO,0);
-        vTaskDelay(pdMS_TO_TICKS(10));
-        gpio_set_level(GPIO,1);
-        vTaskDelay(pdMS_TO_TICKS(10));
-    }
-}
 
 void app_main(void)
 {
