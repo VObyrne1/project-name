@@ -1,7 +1,7 @@
 {
     "version":            "1.2",
     "project_name":       "project-name",
-    "project_version":    "afa851d-dirty",
+    "project_version":    "7b76ec2-dirty",
     "project_path":       "C:/Users/vinni/project-name",
     "idf_path":           "C:/Users/vinni/esp/v5.5.1/esp-idf",
     "build_dir":          "C:/Users/vinni/project-name/build",

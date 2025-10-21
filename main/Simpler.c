@@ -17,6 +17,7 @@
 #include "esp_heap_caps.h"
 #include "esp_rom_gpio.h"
 #include "esp_mac.h"
+#include "esp_spiffs.h"
 
 static const char *TAG = "ADXL345";
 
@@ -44,6 +45,7 @@ static const char *TAG = "ADXL345";
 
 static TimerHandle_t major_impact_timer;
 static bool major_impact_active = false;
+static const char *TAG1 = "spiffs_list";
 
 
 static esp_err_t adxl345_register_read(i2c_master_dev_handle_t dev_handle, uint8_t reg_addr, uint8_t *data, size_t len)
@@ -75,6 +77,31 @@ static void i2c_master_init(i2c_master_bus_handle_t *bus_handle, i2c_master_dev_
         .scl_speed_hz = I2C_MASTER_FREQ_HZ,
     };
     ESP_ERROR_CHECK(i2c_master_bus_add_device(*bus_handle, &dev_config, dev_handle));
+}
+
+
+static void init_spiffs(void)
+{
+    esp_vfs_spiffs_conf_t conf = {
+        .base_path = "/spiffs", //determining path for NVM
+        .partition_label = "spiffs", //labeling at SPIFFS
+        .max_files = 5,
+        .format_if_mount_failed = true,
+    };
+
+    esp_err_t ret = esp_vfs_spiffs_register(&conf);
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to mount SPIFFS (%s)", esp_err_to_name(ret));
+        return;
+    }
+
+    size_t total = 0, used = 0;
+    ret = esp_spiffs_info(conf.partition_label, &total, &used);
+    if (ret == ESP_OK) {
+        ESP_LOGI(TAG, "SPIFFS mounted: total: %d bytes, used: %d bytes", total, used);
+    } else {
+        ESP_LOGE(TAG, "SPIFFS info failed (%s)", esp_err_to_name(ret));
+    }
 }
 
 static void init_led(void){
@@ -122,6 +149,7 @@ static const char* infer_impact_type(float ax,float ay,float az,float mag){
 }
 
 static void classify_impact(float x_g, float y_g, float z_g){
+    float mag=sqrtf(x_g*x_g+y_g*y_g+z_g*z_g);
     if(x_g > THRESH_MODERATE_G || x_g < -THRESH_MODERATE_G || y_g > THRESH_MODERATE_G || y_g < -THRESH_MODERATE_G || z_g > THRESH_MODERATE_G || z_g < -THRESH_MODERATE_G){
             ESP_LOGW(TAG, "Minor Impact!");
     }
@@ -130,6 +158,7 @@ static void classify_impact(float x_g, float y_g, float z_g){
             if(!major_impact_active){
                 major_impact_active=true;
                 xTimerStart(major_impact_timer,0);
+                //log_to_spiffs(mag);
             }
             flash_led(LED_GPIO);
             buzzer_control(BUZZER_GPIO);
@@ -143,6 +172,13 @@ static void classify_impact(float x_g, float y_g, float z_g){
     }
 }
 
+/*
+void log_to_spiffs(float mag){
+fopen(
+fwrite(
+fclose(
+}
+*/
 static void button_handler(void* arg){
      if(major_impact_active) {
         xTimerStopFromISR(major_impact_timer, NULL);
