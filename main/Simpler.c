@@ -93,17 +93,30 @@ static void flash_led(int GPIO){
 }
 
 static void buzzer_control(int GPIO){
-    for(int i=0;i<500;i++){
-        gpio_set_level(GPIO,0);
-        vTaskDelay(pdMS_TO_TICKS(10));
-        gpio_set_level(GPIO,1);
-        vTaskDelay(pdMS_TO_TICKS(10));
+    int freq = 4000; // 4kHz
+    int duration_ms = 5000; // 5 seconds
+    int period_us = 1000000 / freq; // period in microseconds
+    int half_period_us = period_us / 2;
+    int cycles = (duration_ms * 1000) / period_us;
+    
+    for(int i = 0; i < cycles; i++){
+        gpio_set_level(GPIO, 1);
+        esp_rom_delay_us(half_period_us);
+        gpio_set_level(GPIO, 0);
+        esp_rom_delay_us(half_period_us);
     }
 }
 
 static const char* infer_impact_type(float ax,float ay,float az,float mag){
+    
     if(mag>THRESH_SEVERE_G && az<-1.0f && fabsf(az)>fabsf(ax) && fabsf(az)>fabsf(ay)) return "Fall";
     if(mag>THRESH_MODERATE_G && fabsf(ax)>0.5f && fabsf(ay)>0.5f && fabsf(az)>0.5f) return "Ceiling Collapse";
+    if(mag>THRESH_SEVERE_G && az>1.0f && fabsf(az)>fabsf(ax) && fabsf(az)>fabsf(ay)) return "Hard Landing";
+    if(mag>THRESH_MODERATE_G && ax>0.5f) return "Front Impact";
+    if(mag>THRESH_MODERATE_G && ax<-0.5f) return "Rear Impact";
+    if(mag>THRESH_MODERATE_G && ay>0.5f) return "Right Side Impact";
+    if(mag>THRESH_MODERATE_G && ay<-0.5f) return "Left Side Impact";
+    
     if(mag>THRESH_MODERATE_G) return "blunt";
     return "none";
 }
@@ -212,22 +225,6 @@ void app_main(void)
         
         ESP_LOGI(TAG, "X=%.3f g, Y=%.3f g, Z=%.3f g", x_g, y_g, z_g);
         classify_impact(x_g, y_g, z_g);
-        /*
-        ESP_LOGI(TAG, "X=%.3f g, Y=%.3f g, Z=%.3f g", x_g, y_g, z_g);
-        if(x_g > 0.5f || x_g < -0.5f || y_g > 0.5f || y_g < -0.5f || z_g > 0.5f || z_g < -0.5f){
-            ESP_LOGW(TAG, "Minor Impact!");
-        }
-        if(x_g > 1.0f || x_g < -1.0f || y_g > 1.0f || y_g < -1.0f || z_g > 1.0f || z_g < -1.0f){
-            ESP_LOGW(TAG, "Major Impact!");
-            flash_led(LED_GPIO);
-        }
-        
-        float mag = sqrtf(x_g*x_g+y_g*y_g+z_g*z_g);
-        const char* impact_type = infer_impact_type(x_g,y_g,z_g,mag);
-        if(impact_type!="none"){
-            ESP_LOGE(TAG, "Impact detected! Type: %s, Magnitude: %.3f g", impact_type, mag);
-        }*/
-        
 
         vTaskDelay(pdMS_TO_TICKS(100));
     }
