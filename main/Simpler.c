@@ -24,7 +24,9 @@ static const char *TAG = "ADXL345";
 
 #define I2C_MASTER_SCL_IO           9 //CONFIG_I2C_MASTER_SCL
 #define I2C_MASTER_SDA_IO           8 //CONFIG_I2C_MASTER_SDA
-#define LED_GPIO                    2 //CONFIG_LED_GPIO
+#define LED_GPIO1                   12//CONFIG_LED_GPIO
+#define LED_GPIO2                   13 //CONFIG_LED_GPIO
+
 #define BUTTON_GPIO                 15 //CONFIG_BUTTON_GPIO
 #define BUZZER_GPIO                 12 //CONFIG_BUZZER_GPIO
 
@@ -144,6 +146,10 @@ void read_log_file(const char *file_path)
 
 void log_data_to_spiffs(float mag, float x_g, float y_g, float z_g)
 {
+    if(gpio_get_level(BUTTON_GPIO)==0){
+        FILE *f = fopen("/spiffs/i2c_log.txt", "w");
+    }
+    else{
     FILE *f = fopen("/spiffs/i2c_log.txt", "a");
     if (f == NULL) {
         ESP_LOGE(TAG, "Failed to open file for writing");
@@ -156,16 +162,20 @@ void log_data_to_spiffs(float mag, float x_g, float y_g, float z_g)
                 y_g,
                 z_g);
     fclose(f);
+
+    read_log_file("/spiffs/i2c_log.txt");
+    }
 }
 
-static void init_led(void){
-    gpio_config_t io_conf = {.pin_bit_mask=1ULL<<LED_GPIO,.mode=GPIO_MODE_OUTPUT,.pull_up_en=0,.pull_down_en=0,.intr_type=GPIO_INTR_DISABLE};
+
+static void init_led(int gpio){
+    gpio_config_t io_conf = {.pin_bit_mask=1ULL<<gpio,.mode=GPIO_MODE_OUTPUT,.pull_up_en=0,.pull_down_en=0,.intr_type=GPIO_INTR_DISABLE};
     gpio_config(&io_conf);
-    gpio_set_level(LED_GPIO,1);
+    gpio_set_level(gpio,1);
 }
 
 static void flash_led(int GPIO){
-    for(int i=0;i<50;i++){
+    for(int i=0;i<75;i++){
         gpio_set_level(GPIO,0);
         vTaskDelay(pdMS_TO_TICKS(100));
         gpio_set_level(GPIO,1);
@@ -214,11 +224,11 @@ static void classify_impact(float x_g, float y_g, float z_g){
             if(!major_impact_active){
                 major_impact_active=true;
                 xTimerStart(major_impact_timer,0);
-                //log_to_spiffs(mag);
+                log_data_to_spiffs(mag, x_g, y_g, z_g);
             }
-            flash_led(LED_GPIO);
+            flash_led(LED_GPIO1);
             buzzer_control(BUZZER_GPIO);
-            gpio_set_level(LED_GPIO,0); //ensure LED off after flash
+            gpio_set_level(LED_GPIO1,0); //ensure LED off after flash
     }
         
     //float mag=sqrtf(x_g*x_g+y_g*y_g+z_g*z_g);
@@ -246,7 +256,7 @@ static void button_handler(void* arg){
 static void major_impact_timer_callback(TimerHandle_t xTimer){
     ESP_LOGW(TAG, "Major impact! WARNING!");
     //flash_led(LED_GPIO);
-    gpio_set_level(LED_GPIO,0); 
+    gpio_set_level(LED_GPIO1,0); 
     major_impact_active=false;
 }
 
@@ -280,7 +290,8 @@ void app_main(void)
 
     // Set data format: Full resolution, ±2g range (0x08)
     ESP_ERROR_CHECK(adxl345_register_write_byte(dev_handle, ADXL345_DATA_FORMAT_REG, 0x08));
-    init_led();
+    init_led(LED_GPIO1);
+    init_led(LED_GPIO2);
 
     // Configure button input
     gpio_config_t io_conf = {
@@ -298,8 +309,9 @@ void app_main(void)
 
     // Create major impact timer (15 sec)
     major_impact_timer = xTimerCreate("MajorImpactTimer", pdMS_TO_TICKS(15000), pdFALSE, NULL, major_impact_timer_callback);
+    init_spiffs();
 
-    
+
     while (1) {
         // Read 6 bytes of acceleration data
         ESP_ERROR_CHECK(adxl345_register_read(dev_handle, ADXL345_DATAX0_REG, data, 6));
@@ -312,10 +324,10 @@ void app_main(void)
 
         float x_g = x_raw * LSB_TO_G;
         float y_g = y_raw * LSB_TO_G;
-        float z_g = z_raw * LSB_TO_G-1.0f;//gravity 
+        float z_g = z_raw * LSB_TO_G -1.0f;//gravity 
         
         
-        ESP_LOGI(TAG, "X=%.3f g, Y=%.3f g, Z=%.3f g", x_g, y_g, z_g);
+        //ESP_LOGI(TAG, "X=%.3f g, Y=%.3f g, Z=%.3f g", x_g, y_g, z_g);
         classify_impact(x_g, y_g, z_g);
 
         vTaskDelay(pdMS_TO_TICKS(100));
