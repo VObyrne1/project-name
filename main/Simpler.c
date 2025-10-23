@@ -18,6 +18,7 @@
 #include "esp_rom_gpio.h"
 #include "esp_mac.h"
 #include "esp_spiffs.h"
+#include "dirent.h"
 
 static const char *TAG = "ADXL345";
 
@@ -42,6 +43,7 @@ static const char *TAG = "ADXL345";
 
 #define THRESH_SEVERE_G             1.0f
 #define THRESH_MODERATE_G           0.5f
+#define MAX_LOG_FILE_SIZE           (100 * 1024)  // 100 KB max log file size
 
 static TimerHandle_t major_impact_timer;
 static bool major_impact_active = false;
@@ -104,6 +106,58 @@ static void init_spiffs(void)
     }
 }
 
+void list_spiffs_files(void)
+{
+    DIR *dir = opendir("/spiffs");
+    if (dir == NULL) {
+        ESP_LOGE(TAG1, "Failed to open directory");
+        return;
+    }
+
+    struct dirent *entry;
+    while ((entry = readdir(dir)) != NULL) {
+        ESP_LOGI(TAG1, "Found file: %s", entry->d_name);
+    }
+
+    closedir(dir);
+}
+
+
+void read_log_file(const char *file_path)
+{
+    FILE *f = fopen(file_path, "r");
+    if (f == NULL) {
+        ESP_LOGE(TAG, "Failed to open");
+        return;
+    }
+
+    ESP_LOGI(TAG, "Reading log file: %s", file_path);
+
+    char line[128];
+    while (fgets(line, sizeof(line), f)) {
+        // Print each line to the console/log
+        printf("%s", line);
+    }
+
+    fclose(f);
+}
+
+void log_data_to_spiffs(float mag, float x_g, float y_g, float z_g)
+{
+    FILE *f = fopen("/spiffs/i2c_log.txt", "a");
+    if (f == NULL) {
+        ESP_LOGE(TAG, "Failed to open file for writing");
+        return;
+    }
+
+        fprintf(f, "Magnitude: %f, X-G: %f, Y-G: %f, Z-G: %f \n",
+                mag,
+                x_g,
+                y_g,
+                z_g);
+    fclose(f);
+}
+
 static void init_led(void){
     gpio_config_t io_conf = {.pin_bit_mask=1ULL<<LED_GPIO,.mode=GPIO_MODE_OUTPUT,.pull_up_en=0,.pull_down_en=0,.intr_type=GPIO_INTR_DISABLE};
     gpio_config(&io_conf);
@@ -118,6 +172,7 @@ static void flash_led(int GPIO){
         vTaskDelay(pdMS_TO_TICKS(100));
     }
 }
+
 
 static void buzzer_control(int GPIO){
     int freq = 4000; // 4kHz
@@ -152,6 +207,7 @@ static void classify_impact(float x_g, float y_g, float z_g){
     float mag=sqrtf(x_g*x_g+y_g*y_g+z_g*z_g);
     if(x_g > THRESH_MODERATE_G || x_g < -THRESH_MODERATE_G || y_g > THRESH_MODERATE_G || y_g < -THRESH_MODERATE_G || z_g > THRESH_MODERATE_G || z_g < -THRESH_MODERATE_G){
             ESP_LOGW(TAG, "Minor Impact!");
+            log_data_to_spiffs(mag, x_g, y_g, z_g);
     }
     if(x_g > THRESH_SEVERE_G || x_g < -THRESH_SEVERE_G || y_g > THRESH_SEVERE_G || y_g < -THRESH_SEVERE_G || z_g > THRESH_SEVERE_G || z_g < -THRESH_SEVERE_G){
             ESP_LOGW(TAG, "Major Impact Detected: Starting Timer!");
@@ -165,7 +221,7 @@ static void classify_impact(float x_g, float y_g, float z_g){
             gpio_set_level(LED_GPIO,0); //ensure LED off after flash
     }
         
-    float mag=sqrtf(x_g*x_g+y_g*y_g+z_g*z_g);
+    //float mag=sqrtf(x_g*x_g+y_g*y_g+z_g*z_g);
     const char* impact_type = infer_impact_type(x_g,y_g,z_g,mag);
     if(strcmp(impact_type, "none")!=0){
         ESP_LOGE(TAG, "Impact detected! Type: %s, Magnitude: %.3f g", impact_type, mag);
