@@ -29,7 +29,7 @@ static const char *TAG = "ADXL345";
 #define LED_GPIO2                   13 //CONFIG_LED_GPIO
 
 #define BUTTON_GPIO                 15 //CONFIG_BUTTON_GPIO
-#define BUZZER_GPIO                 12 //CONFIG_BUZZER_GPIO
+#define BUZZER_GPIO                 20 //CONFIG_BUZZER_GPIO
 
 #define I2C_MASTER_NUM              I2C_NUM_0
 #define I2C_MASTER_FREQ_HZ          100000
@@ -182,7 +182,7 @@ static void init_led(int gpio){
 }
 
 static void flash_led(int GPIO){
-    for(int i=0;i<75;i++){
+    for(int i=0;i<50;i++){
         gpio_set_level(GPIO,0);
         vTaskDelay(pdMS_TO_TICKS(100));
         gpio_set_level(GPIO,1);
@@ -280,8 +280,8 @@ static void classify_impact(float x_g, float y_g, float z_g){
             }
             
             flash_led(LED_GPIO1);
-            buzzer_beep_ms(4000, 5000);
-            gpio_set_level(LED_GPIO1,0); //ensure LED off after flash
+            //buzzer_beep_ms(4000, 5000);
+            //gpio_set_level(LED_GPIO1,0); //ensure LED off after flash
 
             
     }
