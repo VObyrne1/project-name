@@ -5,6 +5,7 @@
 #include "esp_log.h"
 #include "driver/i2c_master.h"
 #include "driver/gpio.h"
+#include "driver/ledc.h"
 #include "math.h"
 #include "esp_err.h"
 #include "string.h"
@@ -49,7 +50,11 @@ static const char *TAG = "ADXL345";
 
 static TimerHandle_t major_impact_timer;
 static bool major_impact_active = false;
+static volatile bool major_impact_cancelled_flag = false;
 static const char *TAG1 = "spiffs_list";
+static int impact_count = 0;
+
+
 
 
 static esp_err_t adxl345_register_read(i2c_master_dev_handle_t dev_handle, uint8_t reg_addr, uint8_t *data, size_t len)
@@ -148,6 +153,8 @@ void log_data_to_spiffs(float mag, float x_g, float y_g, float z_g)
 {
     if(gpio_get_level(BUTTON_GPIO)==0){
         FILE *f = fopen("/spiffs/i2c_log.txt", "w");
+        impact_count=0;
+        gpio_set_level(LED_GPIO2,1);
     }
     else{
     FILE *f = fopen("/spiffs/i2c_log.txt", "a");
@@ -184,18 +191,67 @@ static void flash_led(int GPIO){
 }
 
 
-static void buzzer_control(int GPIO){
-    int freq = 4000; // 4kHz
-    int duration_ms = 5000; // 5 seconds
-    int period_us = 1000000 / freq; // period in microseconds
-    int half_period_us = period_us / 2;
-    int cycles = (duration_ms * 1000) / period_us;
-    
-    for(int i = 0; i < cycles; i++){
-        gpio_set_level(GPIO, 1);
-        esp_rom_delay_us(half_period_us);
-        gpio_set_level(GPIO, 0);
-        esp_rom_delay_us(half_period_us);
+/* Buzzer using LEDC hardware PWM to avoid blocking the main task.
+   We create a short one-shot FreeRTOS timer to stop the PWM after the
+   requested duration so buzzer_beep_ms() is non-blocking.
+*/
+static const ledc_channel_t BUZZER_LEDC_CHANNEL = LEDC_CHANNEL_0;
+static const ledc_timer_bit_t BUZZER_DUTY_RES = LEDC_TIMER_8_BIT;
+static const ledc_timer_t BUZZER_LEDC_TIMER = LEDC_TIMER_0;
+
+/* Select LEDC speed mode; fall back to 0 if symbol not defined for this target */
+#if defined(LEDC_HIGH_SPEED_MODE)
+#define BUZZER_LEDC_MODE LEDC_HIGH_SPEED_MODE
+#elif defined(LEDC_LOW_SPEED_MODE)
+#define BUZZER_LEDC_MODE LEDC_LOW_SPEED_MODE
+#else
+#define BUZZER_LEDC_MODE 0
+#endif
+
+static void buzzer_stop_timer_cb(TimerHandle_t xTimer)
+{
+    /* Stop PWM and delete this one-shot timer */
+    ledc_set_duty(BUZZER_LEDC_MODE, BUZZER_LEDC_CHANNEL, 0);
+    ledc_update_duty(BUZZER_LEDC_MODE, BUZZER_LEDC_CHANNEL);
+    ledc_stop(BUZZER_LEDC_MODE, BUZZER_LEDC_CHANNEL, 0);
+    xTimerDelete(xTimer, 0);
+}
+
+static void buzzer_init(void)
+{
+    ledc_timer_config_t ledc_timer = {
+        .speed_mode       = BUZZER_LEDC_MODE,
+        .duty_resolution  = BUZZER_DUTY_RES,
+        .timer_num        = BUZZER_LEDC_TIMER,
+        .freq_hz          = 2000, // default, will be updated per beep
+        .clk_cfg          = LEDC_AUTO_CLK,
+    };
+    ledc_timer_config(&ledc_timer);
+
+    ledc_channel_config_t ledc_channel = {
+        .gpio_num       = BUZZER_GPIO,
+        .speed_mode     = BUZZER_LEDC_MODE,
+        .channel        = BUZZER_LEDC_CHANNEL,
+        .intr_type      = LEDC_INTR_DISABLE,
+        .timer_sel      = BUZZER_LEDC_TIMER,
+        .duty           = 0,
+        .hpoint         = 0
+    };
+    ledc_channel_config(&ledc_channel);
+}
+
+static void buzzer_beep_ms(uint32_t freq_hz, uint32_t duration_ms)
+{
+    /* Configure frequency and start PWM at 50% duty */
+    ledc_set_freq(BUZZER_LEDC_MODE, BUZZER_LEDC_TIMER, freq_hz);
+    uint32_t max_duty = (1 << BUZZER_DUTY_RES) - 1;
+    ledc_set_duty(BUZZER_LEDC_MODE, BUZZER_LEDC_CHANNEL, max_duty / 2);
+    ledc_update_duty(BUZZER_LEDC_MODE, BUZZER_LEDC_CHANNEL);
+
+    /* Create a one-shot timer to stop the buzzer after duration_ms */
+    TimerHandle_t t = xTimerCreate("bstop", pdMS_TO_TICKS(duration_ms), pdFALSE, NULL, buzzer_stop_timer_cb);
+    if (t) {
+        xTimerStart(t, 0);
     }
 }
 
@@ -215,10 +271,6 @@ static const char* infer_impact_type(float ax,float ay,float az,float mag){
 
 static void classify_impact(float x_g, float y_g, float z_g){
     float mag=sqrtf(x_g*x_g+y_g*y_g+z_g*z_g);
-    if(x_g > THRESH_MODERATE_G || x_g < -THRESH_MODERATE_G || y_g > THRESH_MODERATE_G || y_g < -THRESH_MODERATE_G || z_g > THRESH_MODERATE_G || z_g < -THRESH_MODERATE_G){
-            ESP_LOGW(TAG, "Minor Impact!");
-            log_data_to_spiffs(mag, x_g, y_g, z_g);
-    }
     if(x_g > THRESH_SEVERE_G || x_g < -THRESH_SEVERE_G || y_g > THRESH_SEVERE_G || y_g < -THRESH_SEVERE_G || z_g > THRESH_SEVERE_G || z_g < -THRESH_SEVERE_G){
             ESP_LOGW(TAG, "Major Impact Detected: Starting Timer!");
             if(!major_impact_active){
@@ -226,11 +278,25 @@ static void classify_impact(float x_g, float y_g, float z_g){
                 xTimerStart(major_impact_timer,0);
                 log_data_to_spiffs(mag, x_g, y_g, z_g);
             }
+            
             flash_led(LED_GPIO1);
-            buzzer_control(BUZZER_GPIO);
+            buzzer_beep_ms(4000, 5000);
             gpio_set_level(LED_GPIO1,0); //ensure LED off after flash
+
+            
     }
+    else if(x_g > THRESH_MODERATE_G || x_g < -THRESH_MODERATE_G || y_g > THRESH_MODERATE_G || y_g < -THRESH_MODERATE_G || z_g > THRESH_MODERATE_G || z_g < -THRESH_MODERATE_G){
+            ESP_LOGW(TAG, "Minor Impact!");
+            log_data_to_spiffs(mag, x_g, y_g, z_g);
+            impact_count++;
+    }
+    
         
+    if(impact_count>=5 && mag>THRESH_MODERATE_G){
+            ESP_LOGW(TAG, "Multiple impacts detected (%d)! Go see a doctor!", impact_count);
+            //impact_count=0;
+            gpio_set_level(LED_GPIO2,0);
+        }
     //float mag=sqrtf(x_g*x_g+y_g*y_g+z_g*z_g);
     const char* impact_type = infer_impact_type(x_g,y_g,z_g,mag);
     if(strcmp(impact_type, "none")!=0){
@@ -245,19 +311,39 @@ fwrite(
 fclose(
 }
 */
-static void button_handler(void* arg){
-     if(major_impact_active) {
-        xTimerStopFromISR(major_impact_timer, NULL);
-        major_impact_active = false;
-        ESP_LOGI(TAG, "Major impact warning cancelled by button!");
+static void IRAM_ATTR button_handler(void* arg){
+    /* ISR: avoid calling non-ISR safe APIs (like ESP_LOG) here.
+       Stop the timer from ISR and set a flag so the main task can log.
+    */
+    if (major_impact_active) {
+        BaseType_t xHigherPriorityTaskWoken = pdFALSE;
+        BaseType_t stopped = xTimerStopFromISR(major_impact_timer, &xHigherPriorityTaskWoken);
+        if (stopped == pdPASS) {
+            /* Only mark cancelled if the timer was actually stopped */
+            major_impact_active = false;
+            major_impact_cancelled_flag = true;
+        }
+        if (xHigherPriorityTaskWoken == pdTRUE) {
+            portYIELD_FROM_ISR();
+        }
     }
 }
 
 static void major_impact_timer_callback(TimerHandle_t xTimer){
+    /* If cancellation was requested (set from ISR), skip executing the
+       warning actions. The flag is volatile and may be set from the ISR.
+    */
+    if (major_impact_cancelled_flag) {
+        /* Clear the flag here and don't perform the warning */
+        major_impact_cancelled_flag = false;
+        major_impact_active = false;
+        return;
+    }
+
     ESP_LOGW(TAG, "Major impact! WARNING!");
     //flash_led(LED_GPIO);
-    gpio_set_level(LED_GPIO1,0); 
-    major_impact_active=false;
+    gpio_set_level(LED_GPIO1,0);
+    major_impact_active = false;
 }
 
 
@@ -292,6 +378,7 @@ void app_main(void)
     ESP_ERROR_CHECK(adxl345_register_write_byte(dev_handle, ADXL345_DATA_FORMAT_REG, 0x08));
     init_led(LED_GPIO1);
     init_led(LED_GPIO2);
+    buzzer_init();
 
     // Configure button input
     gpio_config_t io_conf = {
@@ -308,7 +395,7 @@ void app_main(void)
     gpio_isr_handler_add(BUTTON_GPIO, button_handler, NULL);
 
     // Create major impact timer (15 sec)
-    major_impact_timer = xTimerCreate("MajorImpactTimer", pdMS_TO_TICKS(15000), pdFALSE, NULL, major_impact_timer_callback);
+    major_impact_timer = xTimerCreate("MajorImpactTimer", pdMS_TO_TICKS(10000), pdFALSE, NULL, major_impact_timer_callback);
     init_spiffs();
 
 
@@ -329,6 +416,15 @@ void app_main(void)
         
         //ESP_LOGI(TAG, "X=%.3f g, Y=%.3f g, Z=%.3f g", x_g, y_g, z_g);
         classify_impact(x_g, y_g, z_g);
+        
+
+        /* If the button cancelled a major impact warning in the ISR,
+           perform the non-ISR-safe logging here in task context. */
+        if (major_impact_cancelled_flag) {
+            major_impact_cancelled_flag = false;
+            ESP_LOGI(TAG, "Major impact warning cancelled by button!");
+            gpio_set_level(LED_GPIO1,1); 
+        }
 
         vTaskDelay(pdMS_TO_TICKS(100));
     }
