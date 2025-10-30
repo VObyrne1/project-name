@@ -20,6 +20,7 @@
 #include "esp_mac.h"
 #include "esp_spiffs.h"
 #include "dirent.h"
+#include "stdlib.h"
 
 static const char *TAG = "ADXL345";
 
@@ -155,8 +156,9 @@ void log_data_to_spiffs(float mag, float x_g, float y_g, float z_g)
         FILE *f = fopen("/spiffs/i2c_log.txt", "w");
         impact_count=0;
         gpio_set_level(LED_GPIO2,1);
+        fclose(f);
+        return;
     }
-    else{
     FILE *f = fopen("/spiffs/i2c_log.txt", "a");
     if (f == NULL) {
         ESP_LOGE(TAG, "Failed to open file for writing");
@@ -171,7 +173,6 @@ void log_data_to_spiffs(float mag, float x_g, float y_g, float z_g)
     fclose(f);
 
     read_log_file("/spiffs/i2c_log.txt");
-    }
 }
 
 
@@ -182,11 +183,59 @@ static void init_led(int gpio){
 }
 
 static void flash_led(int GPIO){
-    for(int i=0;i<50;i++){
+    for(int i=0;i<10;i++){
         gpio_set_level(GPIO,0);
-        vTaskDelay(pdMS_TO_TICKS(100));
+        vTaskDelay(pdMS_TO_TICKS(1000));
         gpio_set_level(GPIO,1);
-        vTaskDelay(pdMS_TO_TICKS(100));
+        vTaskDelay(pdMS_TO_TICKS(1000));
+    }
+}
+
+/* Non-blocking LED blink task — start_led_blink/stop_led_blink
+   allows the LED to flash in background while main loop collects data.
+*/
+static TaskHandle_t led_blink_task_handle = NULL;
+static int led_blink_gpio = -1;
+
+typedef struct {
+    int gpio;
+    uint32_t on_ms;
+    uint32_t off_ms;
+} led_blink_params_t;
+
+static void led_blink_task(void *arg)
+{
+    led_blink_params_t params = *(led_blink_params_t *)arg;
+    free(arg);
+
+    while (1) {
+        gpio_set_level(params.gpio, 0); // on (active low in this board)
+        vTaskDelay(pdMS_TO_TICKS(params.on_ms));
+        gpio_set_level(params.gpio, 1); // off
+        vTaskDelay(pdMS_TO_TICKS(params.off_ms));
+    }
+}
+
+static void start_led_blink(int gpio, uint32_t on_ms, uint32_t off_ms)
+{
+    if (led_blink_task_handle != NULL) return; // already running
+    led_blink_gpio = gpio;
+    led_blink_params_t *p = malloc(sizeof(led_blink_params_t));
+    if (!p) return;
+    p->gpio = gpio;
+    p->on_ms = on_ms;
+    p->off_ms = off_ms;
+    xTaskCreate(led_blink_task, "led_blink", 2048, p, tskIDLE_PRIORITY + 1, &led_blink_task_handle);
+}
+
+static void stop_led_blink(void)
+{
+    if (led_blink_task_handle == NULL) return;
+    vTaskDelete(led_blink_task_handle);
+    led_blink_task_handle = NULL;
+    if (led_blink_gpio >= 0) {
+        gpio_set_level(led_blink_gpio, 1); // ensure LED off
+        led_blink_gpio = -1;
     }
 }
 
@@ -195,9 +244,9 @@ static void flash_led(int GPIO){
    We create a short one-shot FreeRTOS timer to stop the PWM after the
    requested duration so buzzer_beep_ms() is non-blocking.
 */
-static const ledc_channel_t BUZZER_LEDC_CHANNEL = LEDC_CHANNEL_0;
-static const ledc_timer_bit_t BUZZER_DUTY_RES = LEDC_TIMER_8_BIT;
-static const ledc_timer_t BUZZER_LEDC_TIMER = LEDC_TIMER_0;
+//static const ledc_channel_t BUZZER_LEDC_CHANNEL = LEDC_CHANNEL_0;
+//static const ledc_timer_bit_t BUZZER_DUTY_RES = LEDC_TIMER_8_BIT;
+//static const ledc_timer_t BUZZER_LEDC_TIMER = LEDC_TIMER_0;
 
 /* Select LEDC speed mode; fall back to 0 if symbol not defined for this target */
 #if defined(LEDC_HIGH_SPEED_MODE)
@@ -207,10 +256,10 @@ static const ledc_timer_t BUZZER_LEDC_TIMER = LEDC_TIMER_0;
 #else
 #define BUZZER_LEDC_MODE 0
 #endif
-
+/*
 static void buzzer_stop_timer_cb(TimerHandle_t xTimer)
 {
-    /* Stop PWM and delete this one-shot timer */
+    
     ledc_set_duty(BUZZER_LEDC_MODE, BUZZER_LEDC_CHANNEL, 0);
     ledc_update_duty(BUZZER_LEDC_MODE, BUZZER_LEDC_CHANNEL);
     ledc_stop(BUZZER_LEDC_MODE, BUZZER_LEDC_CHANNEL, 0);
@@ -242,18 +291,19 @@ static void buzzer_init(void)
 
 static void buzzer_beep_ms(uint32_t freq_hz, uint32_t duration_ms)
 {
-    /* Configure frequency and start PWM at 50% duty */
+    
     ledc_set_freq(BUZZER_LEDC_MODE, BUZZER_LEDC_TIMER, freq_hz);
     uint32_t max_duty = (1 << BUZZER_DUTY_RES) - 1;
     ledc_set_duty(BUZZER_LEDC_MODE, BUZZER_LEDC_CHANNEL, max_duty / 2);
     ledc_update_duty(BUZZER_LEDC_MODE, BUZZER_LEDC_CHANNEL);
 
-    /* Create a one-shot timer to stop the buzzer after duration_ms */
+    
     TimerHandle_t t = xTimerCreate("bstop", pdMS_TO_TICKS(duration_ms), pdFALSE, NULL, buzzer_stop_timer_cb);
     if (t) {
         xTimerStart(t, 0);
     }
 }
+*/
 
 static const char* infer_impact_type(float ax,float ay,float az,float mag){
     
@@ -279,9 +329,8 @@ static void classify_impact(float x_g, float y_g, float z_g){
                 log_data_to_spiffs(mag, x_g, y_g, z_g);
             }
             
-            flash_led(LED_GPIO1);
+            start_led_blink(LED_GPIO1, 100, 100);
             //buzzer_beep_ms(4000, 5000);
-            //gpio_set_level(LED_GPIO1,0); //ensure LED off after flash
 
             
     }
@@ -337,9 +386,11 @@ static void major_impact_timer_callback(TimerHandle_t xTimer){
         /* Clear the flag here and don't perform the warning */
         major_impact_cancelled_flag = false;
         major_impact_active = false;
+        stop_led_blink();
         return;
     }
 
+    stop_led_blink();
     ESP_LOGW(TAG, "Major impact! WARNING!");
     //flash_led(LED_GPIO);
     gpio_set_level(LED_GPIO1,0);
@@ -378,7 +429,7 @@ void app_main(void)
     ESP_ERROR_CHECK(adxl345_register_write_byte(dev_handle, ADXL345_DATA_FORMAT_REG, 0x08));
     init_led(LED_GPIO1);
     init_led(LED_GPIO2);
-    buzzer_init();
+    //buzzer_init();
 
     // Configure button input
     gpio_config_t io_conf = {
@@ -423,7 +474,7 @@ void app_main(void)
         if (major_impact_cancelled_flag) {
             major_impact_cancelled_flag = false;
             ESP_LOGI(TAG, "Major impact warning cancelled by button!");
-            gpio_set_level(LED_GPIO1,1); 
+            stop_led_blink();
         }
 
         vTaskDelay(pdMS_TO_TICKS(100));
