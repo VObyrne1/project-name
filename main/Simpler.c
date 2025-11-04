@@ -340,17 +340,17 @@ static void classify_impact(float x_g, float y_g, float z_g){
             impact_count++;
     }
     
-        
+      const char* impact_type = infer_impact_type(x_g,y_g,z_g,mag);
+    if(strcmp(impact_type, "none")!=0){
+        ESP_LOGE(TAG, "Impact detected! Type: %s, Magnitude: %.3f g", impact_type, mag);
+    }
+   
     if(impact_count>=5 && mag>THRESH_MODERATE_G){
             ESP_LOGW(TAG, "Multiple impacts detected (%d)! Go see a doctor!", impact_count);
             //impact_count=0;
             gpio_set_level(LED_GPIO2,0);
         }
     //float mag=sqrtf(x_g*x_g+y_g*y_g+z_g*z_g);
-    const char* impact_type = infer_impact_type(x_g,y_g,z_g,mag);
-    if(strcmp(impact_type, "none")!=0){
-        ESP_LOGE(TAG, "Impact detected! Type: %s, Magnitude: %.3f g", impact_type, mag);
-    }
 }
 
 /*
