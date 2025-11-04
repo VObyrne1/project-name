@@ -54,6 +54,10 @@ static bool major_impact_active = false;
 static volatile bool major_impact_cancelled_flag = false;
 static const char *TAG1 = "spiffs_list";
 static int impact_count = 0;
+static float baseline_x = 0.0f;
+static float baseline_y = 0.0f;
+static float baseline_z = 0.0f;
+static float baseline_mag = 0.0f;
 
 
 
@@ -157,6 +161,7 @@ void log_data_to_spiffs(float mag, float x_g, float y_g, float z_g)
         impact_count=0;
         gpio_set_level(LED_GPIO2,1);
         fclose(f);
+        ESP_LOGI(TAG, "Log file reset by button press.");
         return;
     }
     FILE *f = fopen("/spiffs/i2c_log.txt", "a");
@@ -319,6 +324,51 @@ static const char* infer_impact_type(float ax,float ay,float az,float mag){
     return "none";
 }
 
+/* Collect baseline accelerometer readings for duration_ms sampling every interval_ms.
+   This blocks for the duration (intended to run at startup) and fills baseline globals.
+*/
+static void collect_baseline(i2c_master_dev_handle_t dev_handle, uint32_t duration_ms, uint32_t interval_ms)
+{
+    const int max_samples = (duration_ms + interval_ms - 1) / interval_ms;
+    if (max_samples <= 0) return;
+
+    float sx = 0.0f, sy = 0.0f, sz = 0.0f, sm = 0.0f;
+    int samples = 0;
+    uint8_t data[6];
+
+    ESP_LOGI(TAG, "Collecting baseline for %u ms (%d samples)...", duration_ms, max_samples);
+    for (int i = 0; i < max_samples; ++i) {
+        esp_err_t r = adxl345_register_read(dev_handle, ADXL345_DATAX0_REG, data, 6);
+        if (r == ESP_OK) {
+            int16_t x_raw = (int16_t)((data[1] << 8) | data[0]);
+            int16_t y_raw = (int16_t)((data[3] << 8) | data[2]);
+            int16_t z_raw = (int16_t)((data[5] << 8) | data[4]);
+            float x_g = x_raw * LSB_TO_G;
+            float y_g = y_raw * LSB_TO_G;
+            float z_g = z_raw * LSB_TO_G - 1.0f; // gravity offset used elsewhere
+            float mag = sqrtf(x_g * x_g + y_g * y_g + z_g * z_g);
+            sx += abs(x_g); 
+            sy += abs(y_g); 
+            sz += abs(z_g); 
+            sm += mag;
+            samples++;
+        } else {
+            ESP_LOGW(TAG, "Baseline sample %d failed: %s", i, esp_err_to_name(r));
+        }
+        vTaskDelay(pdMS_TO_TICKS(interval_ms));
+    }
+
+    if (samples > 0) {
+        baseline_x = sx / samples;
+        baseline_y = sy / samples;
+        baseline_z = sz / samples;
+        baseline_mag = sm / samples;
+        ESP_LOGI(TAG, "Baseline collected: X=%.3fg Y=%.3fg Z=%.3fg MAG=%.3fg (n=%d)", baseline_x, baseline_y, baseline_z, baseline_mag, samples);
+    } else {
+        ESP_LOGW(TAG, "No baseline samples collected");
+    }
+}
+
 static void classify_impact(float x_g, float y_g, float z_g){
     float mag=sqrtf(x_g*x_g+y_g*y_g+z_g*z_g);
     if(x_g > THRESH_SEVERE_G || x_g < -THRESH_SEVERE_G || y_g > THRESH_SEVERE_G || y_g < -THRESH_SEVERE_G || z_g > THRESH_SEVERE_G || z_g < -THRESH_SEVERE_G){
@@ -429,6 +479,8 @@ void app_main(void)
     ESP_ERROR_CHECK(adxl345_register_write_byte(dev_handle, ADXL345_DATA_FORMAT_REG, 0x08));
     init_led(LED_GPIO1);
     init_led(LED_GPIO2);
+    
+    collect_baseline(dev_handle, 5000, 100);
     //buzzer_init();
 
     // Configure button input
