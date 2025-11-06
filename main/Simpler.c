@@ -42,8 +42,31 @@ static const char *TAG = "ADXL345";
 #define ADXL345_DATA_FORMAT_REG     0x31
 #define ADXL345_DATAX0_REG          0x32
 
+#define H3LIS331DL_ADDR          0x18
+#define H3LIS331DL_WHO_AM_I_REG   0x0F
+#define H3LIS331DL_CTRL_REG1    0x20
+#define H3LIS331DL_OUT_X_L    0x28
+#define H3LIS331DL_OUT_Y_L    0x2A
+#define H3LIS331DL_OUT_Z_L    0x2C
+#define H3LIS331DL_WHO_AM_I_EXPECTED 0x32
+#define H3LIS331DL_CTRL_REG4       0x23
+
+
 #define ADXL345_DEVID_EXPECTED      0xE5
 #define LSB_TO_G                    0.0039f  // 3.9 mg/LSB for ±2g range
+/* H3LIS331DL datasheet values (user provided):
+    - Full scale: ±100 g
+    - Sensitivity: 780 mg / digit (i.e. 0.78 g per LSB)
+    - Zero-g offset accuracy: ±1.5 g
+    - Acceleration noise density (ODR 50Hz): 50 mg/√Hz (approx)
+    These values are used to convert raw counts to g.
+*/
+#define H3LIS_SENSITIVITY_MG       780.0f
+#define H3LIS_LSB_TO_G             (H3LIS_SENSITIVITY_MG / 1000.0f) /* 0.78 g/LSB */
+/* ADXL345 configured to ±16g full-resolution */
+#define ADXL_MAX_G                  16.0f
+/* Hand over when ADXL reaches this fraction of its max (configurable) */
+#define ADXL_HANDOVER_RATIO         0.90f
 
 #define THRESH_SEVERE_G             1.0f
 #define THRESH_MODERATE_G           0.5f
@@ -67,13 +90,97 @@ static esp_err_t adxl345_register_read(i2c_master_dev_handle_t dev_handle, uint8
     return i2c_master_transmit_receive(dev_handle, &reg_addr, 1, data, len, I2C_MASTER_TIMEOUT_MS / portTICK_PERIOD_MS);
 }
 
+static esp_err_t h3lis_register_read(i2c_master_dev_handle_t dev_handle, uint8_t reg_addr, uint8_t *data, size_t len)
+{
+    uint8_t addr = reg_addr;
+    /* Some devices require setting MSB for auto-increment during multi-byte read */
+    if (len > 1) addr = reg_addr | 0x80;
+    return i2c_master_transmit_receive(dev_handle, &addr, 1, data, len, I2C_MASTER_TIMEOUT_MS / portTICK_PERIOD_MS);
+}
+
+static esp_err_t h3lis_register_write_byte(i2c_master_dev_handle_t dev_handle, uint8_t reg_addr, uint8_t data)
+{
+    uint8_t write_buf[2] = { reg_addr, data };
+    return i2c_master_transmit(dev_handle, write_buf, sizeof(write_buf), I2C_MASTER_TIMEOUT_MS / portTICK_PERIOD_MS);
+}
+
+static void h3lis_init(i2c_master_dev_handle_t dev_handle)
+{
+    uint8_t who = 0;
+    if (h3lis_register_read(dev_handle, H3LIS331DL_WHO_AM_I_REG, &who, 1) == ESP_OK) {
+        ESP_LOGI(TAG, "H3LIS WHO_AM_I = 0x%02X", who);
+        if (who != H3LIS331DL_WHO_AM_I_EXPECTED) {
+            ESP_LOGW(TAG, "Unexpected H3LIS WHO_AM_I (expected 0x%02X)", H3LIS331DL_WHO_AM_I_EXPECTED);
+        }
+    } else {
+        ESP_LOGW(TAG, "Failed to read H3LIS WHO_AM_I");
+    }
+
+    /* Configure H3LIS: enable X/Y/Z, set ODR to a high rate and normal mode.
+       0x27: common value to enable axes and set ODR (adjust if needed).
+       Also set CTRL_REG4 to select full-scale ±100g if required by the device.
+    */
+    if (h3lis_register_write_byte(dev_handle, H3LIS331DL_CTRL_REG1, 0x27) != ESP_OK) {
+        ESP_LOGW(TAG, "Failed to write H3LIS CTRL_REG1");
+    } else {
+        ESP_LOGI(TAG, "H3LIS CTRL_REG1 configured");
+    }
+
+    /* Set full-scale to ±100g: value below sets FS bits for ±100g on many H3LIS331DL versions.
+       If your module requires a different value for ±100g, adjust H3LIS_FS_VAL accordingly. */
+    /* H3LIS FS register value for ±100g. This should be set to the value
+       specified by the H3LIS331DL datasheet for your chosen FS setting.
+       If you want me to set the exact datasheet value I can fetch it and
+       update this constant; for now this is a placeholder that you can
+       change after confirming with the datasheet. */
+    /* CTRL_REG4 value provided by user (0x23) — sets FS and related bits per module config */
+    const uint8_t H3LIS_CTRL_REG4_FS_100G = 0x23; /* user provided */
+    if (h3lis_register_write_byte(dev_handle, H3LIS331DL_CTRL_REG4, H3LIS_CTRL_REG4_FS_100G) != ESP_OK) {
+        ESP_LOGW(TAG, "Failed to write H3LIS CTRL_REG4 (FS)");
+    } else {
+        ESP_LOGI(TAG, "H3LIS CTRL_REG4 (FS) configured (val=0x%02X)", H3LIS_CTRL_REG4_FS_100G);
+    }
+    ESP_LOGI(TAG, "H3LIS configured: FS=±100g, sensitivity=%.1f mg/LSB (%.3f g/LSB), zero-g offset accuracy=±1.5 g", H3LIS_SENSITIVITY_MG, H3LIS_LSB_TO_G);
+}
+
+/* Helper: read ADXL345 and return X/Y/Z in g (Z with gravity offset like rest of code)
+   Returns true on success. */
+static bool read_adxl_xyz(i2c_master_dev_handle_t dev_handle, float *xg, float *yg, float *zg)
+{
+    uint8_t data[6];
+    if (adxl345_register_read(dev_handle, ADXL345_DATAX0_REG, data, 6) != ESP_OK) return false;
+    int16_t x_raw = (int16_t)((data[1] << 8) | data[0]);
+    int16_t y_raw = (int16_t)((data[3] << 8) | data[2]);
+    int16_t z_raw = (int16_t)((data[5] << 8) | data[4]);
+    *xg = x_raw * LSB_TO_G;
+    *yg = y_raw * LSB_TO_G;
+    *zg = z_raw * LSB_TO_G - 1.0f; // same gravity offset used elsewhere
+    return true;
+}
+
+/* Helper: read H3LIS331DL and return X/Y/Z in g (apply same gravity offset to Z).
+   Returns true on success. */
+static bool read_h3lis_xyz(i2c_master_dev_handle_t dev_handle, float *xg, float *yg, float *zg)
+{
+    uint8_t data[6];
+    /* H3LIS registers OUT_X_L .. OUT_Z_H are contiguous in many modes; read 6 bytes starting at OUT_X_L */
+    if (h3lis_register_read(dev_handle, H3LIS331DL_OUT_X_L, data, 6) != ESP_OK) return false;
+    int16_t x_raw = (int16_t)((data[1] << 8) | data[0]);
+    int16_t y_raw = (int16_t)((data[3] << 8) | data[2]);
+    int16_t z_raw = (int16_t)((data[5] << 8) | data[4]);
+    *xg = x_raw * H3LIS_LSB_TO_G;
+    *yg = y_raw * H3LIS_LSB_TO_G;
+    *zg = z_raw * H3LIS_LSB_TO_G - 1.0f; /* gravity offset to match ADXL behaviour */
+    return true;
+}
+
 static esp_err_t adxl345_register_write_byte(i2c_master_dev_handle_t dev_handle, uint8_t reg_addr, uint8_t data)
 {
     uint8_t write_buf[2] = { reg_addr, data };
     return i2c_master_transmit(dev_handle, write_buf, sizeof(write_buf), I2C_MASTER_TIMEOUT_MS / portTICK_PERIOD_MS);
 }
 
-static void i2c_master_init(i2c_master_bus_handle_t *bus_handle, i2c_master_dev_handle_t *dev_handle)
+static void i2c_master_init(i2c_master_bus_handle_t *bus_handle, i2c_master_dev_handle_t *dev_handle_adxl, i2c_master_dev_handle_t *dev_handle_h3lis)
 {
     i2c_master_bus_config_t bus_config = {
         .i2c_port = I2C_MASTER_NUM,
@@ -90,7 +197,11 @@ static void i2c_master_init(i2c_master_bus_handle_t *bus_handle, i2c_master_dev_
         .device_address = ADXL345_ADDR,
         .scl_speed_hz = I2C_MASTER_FREQ_HZ,
     };
-    ESP_ERROR_CHECK(i2c_master_bus_add_device(*bus_handle, &dev_config, dev_handle));
+    ESP_ERROR_CHECK(i2c_master_bus_add_device(*bus_handle, &dev_config, dev_handle_adxl));
+
+    /* Add H3LIS331DL device on same bus */
+    dev_config.device_address = H3LIS331DL_ADDR;
+    ESP_ERROR_CHECK(i2c_master_bus_add_device(*bus_handle, &dev_config, dev_handle_h3lis));
 }
 
 
@@ -338,22 +449,16 @@ static void collect_baseline(i2c_master_dev_handle_t dev_handle, uint32_t durati
 
     ESP_LOGI(TAG, "Collecting baseline for %u ms (%d samples)...", duration_ms, max_samples);
     for (int i = 0; i < max_samples; ++i) {
-        esp_err_t r = adxl345_register_read(dev_handle, ADXL345_DATAX0_REG, data, 6);
-        if (r == ESP_OK) {
-            int16_t x_raw = (int16_t)((data[1] << 8) | data[0]);
-            int16_t y_raw = (int16_t)((data[3] << 8) | data[2]);
-            int16_t z_raw = (int16_t)((data[5] << 8) | data[4]);
-            float x_g = x_raw * LSB_TO_G;
-            float y_g = y_raw * LSB_TO_G;
-            float z_g = z_raw * LSB_TO_G - 1.0f; // gravity offset used elsewhere
+        float x_g, y_g, z_g;
+        if (read_adxl_xyz(dev_handle, &x_g, &y_g, &z_g)) {
             float mag = sqrtf(x_g * x_g + y_g * y_g + z_g * z_g);
-            sx += abs(x_g); 
-            sy += abs(y_g); 
-            sz += abs(z_g); 
+            sx += fabsf(x_g);
+            sy += fabsf(y_g);
+            sz += fabsf(z_g);
             sm += mag;
             samples++;
         } else {
-            ESP_LOGW(TAG, "Baseline sample %d failed: %s", i, esp_err_to_name(r));
+            ESP_LOGW(TAG, "Baseline sample %d failed", i);
         }
         vTaskDelay(pdMS_TO_TICKS(interval_ms));
     }
@@ -453,14 +558,15 @@ void app_main(void)
     uint8_t data[6];
     uint8_t devid = 0;
     i2c_master_bus_handle_t bus_handle;
-    i2c_master_dev_handle_t dev_handle;
+    i2c_master_dev_handle_t dev_handle_adxl;
+    i2c_master_dev_handle_t dev_handle_h3lis;
 
-    // Initialize I2C and attach ADXL345
-    i2c_master_init(&bus_handle, &dev_handle);
+    // Initialize I2C and attach ADXL345 and H3LIS331DL
+    i2c_master_init(&bus_handle, &dev_handle_adxl, &dev_handle_h3lis);
     ESP_LOGI(TAG, "I2C initialized successfully");
 
     // Verify ADXL345 identity
-    esp_err_t ret = adxl345_register_read(dev_handle, ADXL345_DEVID_REG, &devid, 1);
+    esp_err_t ret = adxl345_register_read(dev_handle_adxl, ADXL345_DEVID_REG, &devid, 1);
     if (ret == ESP_OK) {
         ESP_LOGI(TAG, "ADXL345 DEVID = 0x%02X", devid);
         if (devid != ADXL345_DEVID_EXPECTED) {
@@ -472,15 +578,20 @@ void app_main(void)
         return;
     }
 
+  
+
     // Enable measurement mode
-    ESP_ERROR_CHECK(adxl345_register_write_byte(dev_handle, ADXL345_POWER_CTL_REG, 0x08));
+    ESP_ERROR_CHECK(adxl345_register_write_byte(dev_handle_adxl, ADXL345_POWER_CTL_REG, 0x08));
 
     // Set data format: Full resolution, ±2g range (0x08)
-    ESP_ERROR_CHECK(adxl345_register_write_byte(dev_handle, ADXL345_DATA_FORMAT_REG, 0x08));
+    /* Set ADXL345 to full-resolution and ±16g range (FULL_RES=1, range=3 -> 0x0B) */
+    ESP_ERROR_CHECK(adxl345_register_write_byte(dev_handle_adxl, ADXL345_DATA_FORMAT_REG, 0x0B));
     init_led(LED_GPIO1);
     init_led(LED_GPIO2);
     
-    collect_baseline(dev_handle, 5000, 100);
+    collect_baseline(dev_handle_adxl, 5000, 100);
+    /* Initialize H3LIS sensor (configure ODR, enable axes) */
+    h3lis_init(dev_handle_h3lis);
     //buzzer_init();
 
     // Configure button input
@@ -503,21 +614,35 @@ void app_main(void)
 
 
     while (1) {
-        // Read 6 bytes of acceleration data
-        ESP_ERROR_CHECK(adxl345_register_read(dev_handle, ADXL345_DATAX0_REG, data, 6));
-        
-        //gpio_set_level(LED_GPIO,1);
-    
-        int16_t x_raw = (int16_t)((data[1] << 8) | data[0]);
-        int16_t y_raw = (int16_t)((data[3] << 8) | data[2]);
-        int16_t z_raw = (int16_t)((data[5] << 8) | data[4]);
+        // Read ADXL345 first (default sensor)
+        float x_g = 0.0f, y_g = 0.0f, z_g = 0.0f;
+        if (!read_adxl_xyz(dev_handle_adxl, &x_g, &y_g, &z_g)) {
+            ESP_LOGW(TAG, "ADXL read failed; skipping sample");
+            vTaskDelay(pdMS_TO_TICKS(100));
+            continue;
+        }
 
-        float x_g = x_raw * LSB_TO_G;
-        float y_g = y_raw * LSB_TO_G;
-        float z_g = z_raw * LSB_TO_G -1.0f;//gravity 
-        
-        
-        //ESP_LOGI(TAG, "X=%.3f g, Y=%.3f g, Z=%.3f g", x_g, y_g, z_g);
+        float mag = sqrtf(x_g*x_g + y_g*y_g + z_g*z_g);
+
+        /* If ADXL indicates a high-G event above 1.5g, query the H3LIS
+           for a more accurate high-G measurement and use that for
+           classification when available. */
+        /* Hand over to H3LIS when ADXL reaches its maximum measurable g (ADXL_MAX_G).
+           This ensures we rely on the high-G sensor only when ADXL is beyond its range. */
+        /* Hand over to H3LIS when ADXL reaches 90% of its maximum measurable g.
+           This gives an early handover to the high-g sensor. */
+        if (mag >= (ADXL_HANDOVER_RATIO * ADXL_MAX_G)) {
+            ESP_LOGI(TAG, "ADXL near max (%.3f g >= %.3f g threshold); reading H3LIS for accurate high-G measurement", mag, ADXL_HANDOVER_RATIO * ADXL_MAX_G);
+            float hx=0.0f, hy=0.0f, hz=0.0f;
+            if (read_h3lis_xyz(dev_handle_h3lis, &hx, &hy, &hz)) {
+                float mag_h = sqrtf(hx*hx + hy*hy + hz*hz);
+                ESP_LOGI(TAG, "H3LIS read MAG=%.3f g; switching to H3LIS values for classification", mag_h);
+                x_g = hx; y_g = hy; z_g = hz; mag = mag_h;
+            } else {
+                ESP_LOGW(TAG, "H3LIS read failed; using ADXL value MAG=%.3f g", mag);
+            }
+        }
+
         classify_impact(x_g, y_g, z_g);
         
 
@@ -534,7 +659,7 @@ void app_main(void)
 
 
     // Clean up (never reached in this loop)
-    ESP_ERROR_CHECK(i2c_master_bus_rm_device(dev_handle));
+    ESP_ERROR_CHECK(i2c_master_bus_rm_device(dev_handle_adxl));
+    ESP_ERROR_CHECK(i2c_master_bus_rm_device(dev_handle_h3lis));
     ESP_ERROR_CHECK(i2c_del_master_bus(bus_handle));
 }
-
