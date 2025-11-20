@@ -24,8 +24,8 @@
 
 static const char *TAG = "ADXL345";
 
-#define I2C_MASTER_SCL_IO           1 //CONFIG_I2C_MASTER_SCL  9-1
-#define I2C_MASTER_SDA_IO           0 //CONFIG_I2C_MASTER_SDA  8-0
+#define I2C_MASTER_SCL_IO           9 //CONFIG_I2C_MASTER_SCL  9-1
+#define I2C_MASTER_SDA_IO           8 //CONFIG_I2C_MASTER_SDA  8-0
 #define LED_GPIO1                   12//CONFIG_LED_GPIO
 #define LED_GPIO2                   13 //CONFIG_LED_GPIO
 
@@ -41,6 +41,7 @@ static const char *TAG = "ADXL345";
 #define ADXL345_POWER_CTL_REG       0x2D
 #define ADXL345_DATA_FORMAT_REG     0x31
 #define ADXL345_DATAX0_REG          0x32
+
 
 #define H3LIS331DL_ADDR          0x18
 #define H3LIS331DL_WHO_AM_I_REG   0x0F
@@ -137,7 +138,7 @@ static void h3lis_init(i2c_master_dev_handle_t dev_handle)
        If you want me to set the exact datasheet value I can fetch it and
        update this constant; for now this is a placeholder that you can
        change after confirming with the datasheet. */
-    /* CTRL_REG4 value provided by user (0x23) — sets FS and related bits per module config */
+     //CTRL_REG4 value provided by user (0x23) — sets FS and related bits per module config 
     const uint8_t H3LIS_CTRL_REG4_FS_100G = 0x23; /* user provided */
     if (h3lis_register_write_byte(dev_handle, H3LIS331DL_CTRL_REG4, H3LIS_CTRL_REG4_FS_100G) != ESP_OK) {
         ESP_LOGW(TAG, "Failed to write H3LIS CTRL_REG4 (FS)");
@@ -149,8 +150,7 @@ static void h3lis_init(i2c_master_dev_handle_t dev_handle)
 
 /* Helper: read ADXL345 and return X/Y/Z in g (Z with gravity offset like rest of code)
    Returns true on success. */
-static bool read_adxl_xyz(i2c_master_dev_handle_t dev_handle, float *xg, float *yg, float *zg)
-{
+static bool read_adxl_xyz(i2c_master_dev_handle_t dev_handle, float *xg, float *yg, float *zg){
     uint8_t data[6];
     if (adxl345_register_read(dev_handle, ADXL345_DATAX0_REG, data, 6) != ESP_OK) return false;
     int16_t x_raw = (int16_t)((data[1] << 8) | data[0]);
@@ -167,14 +167,14 @@ static bool read_adxl_xyz(i2c_master_dev_handle_t dev_handle, float *xg, float *
 static bool read_h3lis_xyz(i2c_master_dev_handle_t dev_handle, float *xg, float *yg, float *zg)
 {
     uint8_t data[6];
-    /* H3LIS registers OUT_X_L .. OUT_Z_H are contiguous in many modes; read 6 bytes starting at OUT_X_L */
+     //H3LIS registers OUT_X_L .. OUT_Z_H are contiguous in many modes; read 6 bytes starting at OUT_X_L 
     if (h3lis_register_read(dev_handle, H3LIS331DL_OUT_X_L, data, 6) != ESP_OK) return false;
     int16_t x_raw = (int16_t)((data[1] << 8) | data[0]);
     int16_t y_raw = (int16_t)((data[3] << 8) | data[2]);
     int16_t z_raw = (int16_t)((data[5] << 8) | data[4]);
     *xg = x_raw * H3LIS_LSB_TO_G;
     *yg = y_raw * H3LIS_LSB_TO_G;
-    *zg = z_raw * H3LIS_LSB_TO_G - 1.0f; /* gravity offset to match ADXL behaviour */
+    *zg = z_raw * H3LIS_LSB_TO_G - 1.0f; 
     return true;
 }
 
@@ -204,9 +204,9 @@ static void i2c_master_init(i2c_master_bus_handle_t *bus_handle, i2c_master_dev_
     };
     ESP_ERROR_CHECK(i2c_master_bus_add_device(*bus_handle, &dev_config, dev_handle_adxl));
 
-    /* Add H3LIS331DL device on same bus */
-    dev_config.device_address = H3LIS331DL_ADDR;
-    ESP_ERROR_CHECK(i2c_master_bus_add_device(*bus_handle, &dev_config, dev_handle_h3lis));
+    /* H3LIS support disabled - do not add H3LIS device */
+    /* dev_config.device_address = H3LIS331DL_ADDR; */
+    /* ESP_ERROR_CHECK(i2c_master_bus_add_device(*bus_handle, &dev_config, dev_handle_h3lis)); */
 }
 
 
@@ -311,7 +311,7 @@ static void init_led(int gpio){
     gpio_config(&io_conf);
     gpio_set_level(gpio,1);
 }
-
+/*
 static void flash_led(int GPIO){
     for(int i=0;i<10;i++){
         gpio_set_level(GPIO,0);
@@ -320,7 +320,7 @@ static void flash_led(int GPIO){
         vTaskDelay(pdMS_TO_TICKS(1000));
     }
 }
-
+*/
 /* Non-blocking LED blink task — start_led_blink/stop_led_blink
    allows the LED to flash in background while main loop collects data.
 */
@@ -421,13 +421,14 @@ static void collect_baseline(i2c_master_dev_handle_t dev_handle, uint32_t durati
         vTaskDelay(pdMS_TO_TICKS(interval_ms));
     }
 
-    if (samples > 0) {
+    if(samples > 0){
         baseline_x = sx / samples;
         baseline_y = sy / samples;
         baseline_z = sz / samples;
         baseline_mag = sm / samples;
         ESP_LOGI(TAG, "Baseline collected: X=%.3fg Y=%.3fg Z=%.3fg MAG=%.3fg (n=%d)", baseline_x, baseline_y, baseline_z, baseline_mag, samples);
-    } else {
+    } 
+    else {
         ESP_LOGW(TAG, "No baseline samples collected");
     }
 }
@@ -439,9 +440,9 @@ static void classify_impact(float x_g, float y_g, float z_g){
             if(!major_impact_active){
                 major_impact_active=true;
                 xTimerStart(major_impact_timer,0);
-                log_data_to_spiffs(mag, x_g, y_g, z_g);
+                
             }
-            
+            log_data_to_spiffs(mag, x_g, y_g, z_g);
             start_led_blink(LED_GPIO1, 100, 100);
             //buzzer_beep_ms(4000, 5000);
 
@@ -452,8 +453,8 @@ static void classify_impact(float x_g, float y_g, float z_g){
             log_data_to_spiffs(mag, x_g, y_g, z_g);
             impact_count++;
     }
+    const char* impact_type = infer_impact_type(x_g,y_g,z_g,mag);
     
-      const char* impact_type = infer_impact_type(x_g,y_g,z_g,mag);
     if(strcmp(impact_type, "none")!=0){
         ESP_LOGE(TAG, "Impact detected! Type: %s, Magnitude: %.3f g", impact_type, mag);
     }
@@ -549,8 +550,7 @@ void app_main(void)
     init_led(LED_GPIO2);
     
     collect_baseline(dev_handle_adxl, 5000, 100);
-    /* Initialize H3LIS sensor (configure ODR, enable axes) */
-    h3lis_init(dev_handle_h3lis);
+    /* H3LIS support disabled: skip h3lis_init(dev_handle_h3lis); */
     //buzzer_init();
 
     // Configure button input
@@ -594,17 +594,12 @@ void app_main(void)
            This ensures we rely on the high-G sensor only when ADXL is beyond its range. */
         /* Hand over to H3LIS when ADXL reaches 90% of its maximum measurable g.
            This gives an early handover to the high-g sensor. */
-        if (mag >= (ADXL_HANDOVER_RATIO * ADXL_MAX_G)) {
-            ESP_LOGI(TAG, "ADXL near max (%.3f g >= %.3f g threshold); reading H3LIS for accurate high-G measurement", mag, ADXL_HANDOVER_RATIO * ADXL_MAX_G);
-            float hx=0.0f, hy=0.0f, hz=0.0f;
-            if (read_h3lis_xyz(dev_handle_h3lis, &hx, &hy, &hz)) {
-                float mag_h = sqrtf(hx*hx + hy*hy + hz*hz);
-                ESP_LOGI(TAG, "H3LIS read MAG=%.3f g; switching to H3LIS values for classification", mag_h);
-                x_g = hx; y_g = hy; z_g = hz; mag = mag_h;
-            } else {
-                ESP_LOGW(TAG, "H3LIS read failed; using ADXL value MAG=%.3f g", mag);
-            }
+       
+        /*if (mag >= (ADXL_HANDOVER_RATIO * ADXL_MAX_G)) {
+            ESP_LOGI(TAG, "H3LIS support disabled at compile-time; using ADXL only (mag=%.3f)", mag);
         }
+        */
+
 
         classify_impact(x_g, y_g, z_g);
         

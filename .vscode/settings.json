@@ -5,7 +5,7 @@
   "idf.openOcdConfigs": [
     "board/esp32c6-builtin.cfg"
   ],
-  "idf.portWin": "COM3",
+  "idf.portWin": "COM4",
   "idf.toolsPathWin": "C:\\Users\\vinni\\.espressif",
   "idf.customExtraVars": {
     "IDF_TARGET": "esp32c6"
@@ -23,6 +23,10 @@
     "led_strip.h": "c",
     "esp_log.h": "c",
     "freertos.h": "c",
-    "ledc.h": "c"
+    "ledc.h": "c",
+    "array": "c",
+    "string": "c",
+    "string_view": "c",
+    "span": "c"
   }
 }
