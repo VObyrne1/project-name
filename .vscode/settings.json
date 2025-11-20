@@ -5,7 +5,7 @@
   "idf.openOcdConfigs": [
     "board/esp32c6-builtin.cfg"
   ],
-  "idf.portWin": "COM4",
+  "idf.portWin": "COM3",
   "idf.toolsPathWin": "C:\\Users\\vinni\\.espressif",
   "idf.customExtraVars": {
     "IDF_TARGET": "esp32c6"
@@ -18,6 +18,11 @@
   ],
   "idf.flashType": "UART",
   "files.associations": {
-    "esp_rom_gpio.h": "c"
+    "esp_rom_gpio.h": "c",
+    "sdkconfig.h": "c",
+    "led_strip.h": "c",
+    "esp_log.h": "c",
+    "freertos.h": "c",
+    "ledc.h": "c"
   }
 }

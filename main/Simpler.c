@@ -24,8 +24,8 @@
 
 static const char *TAG = "ADXL345";
 
-#define I2C_MASTER_SCL_IO           9 //CONFIG_I2C_MASTER_SCL
-#define I2C_MASTER_SDA_IO           8 //CONFIG_I2C_MASTER_SDA
+#define I2C_MASTER_SCL_IO           1 //CONFIG_I2C_MASTER_SCL  9-1
+#define I2C_MASTER_SDA_IO           0 //CONFIG_I2C_MASTER_SDA  8-0
 #define LED_GPIO1                   12//CONFIG_LED_GPIO
 #define LED_GPIO2                   13 //CONFIG_LED_GPIO
 
@@ -54,7 +54,7 @@ static const char *TAG = "ADXL345";
 
 #define ADXL345_DEVID_EXPECTED      0xE5
 #define LSB_TO_G                    0.0039f  // 3.9 mg/LSB for ±2g range
-/* H3LIS331DL datasheet values (user provided):
+/* H3LIS331DL datasheet values:
     - Full scale: ±100 g
     - Sensitivity: 780 mg / digit (i.e. 0.78 g per LSB)
     - Zero-g offset accuracy: ±1.5 g
@@ -81,6 +81,10 @@ static float baseline_x = 0.0f;
 static float baseline_y = 0.0f;
 static float baseline_z = 0.0f;
 static float baseline_mag = 0.0f;
+
+/* Button hold timer for SPIFFS clear (requires 10 second hold) */
+static TimerHandle_t button_hold_timer = NULL;
+static bool button_held = false;
 
 
 
@@ -182,6 +186,7 @@ static esp_err_t adxl345_register_write_byte(i2c_master_dev_handle_t dev_handle,
 
 static void i2c_master_init(i2c_master_bus_handle_t *bus_handle, i2c_master_dev_handle_t *dev_handle_adxl, i2c_master_dev_handle_t *dev_handle_h3lis)
 {
+
     i2c_master_bus_config_t bus_config = {
         .i2c_port = I2C_MASTER_NUM,
         .sda_io_num = I2C_MASTER_SDA_IO,
@@ -265,16 +270,25 @@ void read_log_file(const char *file_path)
     fclose(f);
 }
 
+/* Timer callback: clears SPIFFS if button was held for full 10 seconds */
+static void button_hold_timer_callback(TimerHandle_t xTimer)
+{
+    
+    if (gpio_get_level(BUTTON_GPIO) == 0) {
+        FILE *f = fopen("/spiffs/i2c_log.txt", "w");
+        impact_count = 0;
+        gpio_set_level(LED_GPIO2, 1);
+        fclose(f);
+        ESP_LOGI(TAG, "Log file cleared by 10-second button hold.");
+        button_held = false;
+    } else {
+        ESP_LOGI(TAG, "Button released before 10 seconds; clear cancelled.");
+        button_held = false;
+    }
+}
+
 void log_data_to_spiffs(float mag, float x_g, float y_g, float z_g)
 {
-    if(gpio_get_level(BUTTON_GPIO)==0){
-        FILE *f = fopen("/spiffs/i2c_log.txt", "w");
-        impact_count=0;
-        gpio_set_level(LED_GPIO2,1);
-        fclose(f);
-        ESP_LOGI(TAG, "Log file reset by button press.");
-        return;
-    }
     FILE *f = fopen("/spiffs/i2c_log.txt", "a");
     if (f == NULL) {
         ESP_LOGE(TAG, "Failed to open file for writing");
@@ -356,15 +370,6 @@ static void stop_led_blink(void)
 }
 
 
-/* Buzzer using LEDC hardware PWM to avoid blocking the main task.
-   We create a short one-shot FreeRTOS timer to stop the PWM after the
-   requested duration so buzzer_beep_ms() is non-blocking.
-*/
-//static const ledc_channel_t BUZZER_LEDC_CHANNEL = LEDC_CHANNEL_0;
-//static const ledc_timer_bit_t BUZZER_DUTY_RES = LEDC_TIMER_8_BIT;
-//static const ledc_timer_t BUZZER_LEDC_TIMER = LEDC_TIMER_0;
-
-/* Select LEDC speed mode; fall back to 0 if symbol not defined for this target */
 #if defined(LEDC_HIGH_SPEED_MODE)
 #define BUZZER_LEDC_MODE LEDC_HIGH_SPEED_MODE
 #elif defined(LEDC_LOW_SPEED_MODE)
@@ -372,54 +377,7 @@ static void stop_led_blink(void)
 #else
 #define BUZZER_LEDC_MODE 0
 #endif
-/*
-static void buzzer_stop_timer_cb(TimerHandle_t xTimer)
-{
-    
-    ledc_set_duty(BUZZER_LEDC_MODE, BUZZER_LEDC_CHANNEL, 0);
-    ledc_update_duty(BUZZER_LEDC_MODE, BUZZER_LEDC_CHANNEL);
-    ledc_stop(BUZZER_LEDC_MODE, BUZZER_LEDC_CHANNEL, 0);
-    xTimerDelete(xTimer, 0);
-}
 
-static void buzzer_init(void)
-{
-    ledc_timer_config_t ledc_timer = {
-        .speed_mode       = BUZZER_LEDC_MODE,
-        .duty_resolution  = BUZZER_DUTY_RES,
-        .timer_num        = BUZZER_LEDC_TIMER,
-        .freq_hz          = 2000, // default, will be updated per beep
-        .clk_cfg          = LEDC_AUTO_CLK,
-    };
-    ledc_timer_config(&ledc_timer);
-
-    ledc_channel_config_t ledc_channel = {
-        .gpio_num       = BUZZER_GPIO,
-        .speed_mode     = BUZZER_LEDC_MODE,
-        .channel        = BUZZER_LEDC_CHANNEL,
-        .intr_type      = LEDC_INTR_DISABLE,
-        .timer_sel      = BUZZER_LEDC_TIMER,
-        .duty           = 0,
-        .hpoint         = 0
-    };
-    ledc_channel_config(&ledc_channel);
-}
-
-static void buzzer_beep_ms(uint32_t freq_hz, uint32_t duration_ms)
-{
-    
-    ledc_set_freq(BUZZER_LEDC_MODE, BUZZER_LEDC_TIMER, freq_hz);
-    uint32_t max_duty = (1 << BUZZER_DUTY_RES) - 1;
-    ledc_set_duty(BUZZER_LEDC_MODE, BUZZER_LEDC_CHANNEL, max_duty / 2);
-    ledc_update_duty(BUZZER_LEDC_MODE, BUZZER_LEDC_CHANNEL);
-
-    
-    TimerHandle_t t = xTimerCreate("bstop", pdMS_TO_TICKS(duration_ms), pdFALSE, NULL, buzzer_stop_timer_cb);
-    if (t) {
-        xTimerStart(t, 0);
-    }
-}
-*/
 
 static const char* infer_impact_type(float ax,float ay,float az,float mag){
     
@@ -508,17 +466,9 @@ static void classify_impact(float x_g, float y_g, float z_g){
     //float mag=sqrtf(x_g*x_g+y_g*y_g+z_g*z_g);
 }
 
-/*
-void log_to_spiffs(float mag){
-fopen(
-fwrite(
-fclose(
-}
-*/
+
 static void IRAM_ATTR button_handler(void* arg){
-    /* ISR: avoid calling non-ISR safe APIs (like ESP_LOG) here.
-       Stop the timer from ISR and set a flag so the main task can log.
-    */
+    /* ISR: handle button press for both major impact cancel and SPIFFS clear hold. */
     if (major_impact_active) {
         BaseType_t xHigherPriorityTaskWoken = pdFALSE;
         BaseType_t stopped = xTimerStopFromISR(major_impact_timer, &xHigherPriorityTaskWoken);
@@ -527,6 +477,16 @@ static void IRAM_ATTR button_handler(void* arg){
             major_impact_active = false;
             major_impact_cancelled_flag = true;
         }
+        if (xHigherPriorityTaskWoken == pdTRUE) {
+            portYIELD_FROM_ISR();
+        }
+    }
+    
+    /* Start the 10-second hold timer for SPIFFS clear if not already running */
+    if (!button_held && button_hold_timer != NULL) {
+        button_held = true;
+        BaseType_t xHigherPriorityTaskWoken = pdFALSE;
+        xTimerStartFromISR(button_hold_timer, &xHigherPriorityTaskWoken);
         if (xHigherPriorityTaskWoken == pdTRUE) {
             portYIELD_FROM_ISR();
         }
@@ -560,7 +520,6 @@ void app_main(void)
     i2c_master_bus_handle_t bus_handle;
     i2c_master_dev_handle_t dev_handle_adxl;
     i2c_master_dev_handle_t dev_handle_h3lis;
-
     // Initialize I2C and attach ADXL345 and H3LIS331DL
     i2c_master_init(&bus_handle, &dev_handle_adxl, &dev_handle_h3lis);
     ESP_LOGI(TAG, "I2C initialized successfully");
@@ -610,6 +569,10 @@ void app_main(void)
 
     // Create major impact timer (15 sec)
     major_impact_timer = xTimerCreate("MajorImpactTimer", pdMS_TO_TICKS(10000), pdFALSE, NULL, major_impact_timer_callback);
+    
+    // Create button hold timer (10 sec for SPIFFS clear)
+    button_hold_timer = xTimerCreate("ButtonHoldTimer", pdMS_TO_TICKS(10000), pdFALSE, NULL, button_hold_timer_callback);
+    
     init_spiffs();
 
 
