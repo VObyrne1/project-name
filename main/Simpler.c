@@ -69,8 +69,8 @@ static const char *TAG = "ADXL345";
 /* Hand over when ADXL reaches this fraction of its max (configurable) */
 #define ADXL_HANDOVER_RATIO         0.90f
 
-#define THRESH_SEVERE_G             1.0f
-#define THRESH_MODERATE_G           0.5f
+#define THRESH_SEVERE_G             10.0f
+#define THRESH_MODERATE_G           5.0f
 #define MAX_LOG_FILE_SIZE           (100 * 1024)  // 100 KB max log file size
 
 static TimerHandle_t major_impact_timer;
@@ -381,13 +381,13 @@ static void stop_led_blink(void)
 
 static const char* infer_impact_type(float ax,float ay,float az,float mag){
     
-    if(mag>THRESH_SEVERE_G && az<-1.0f && fabsf(az)>fabsf(ax) && fabsf(az)>fabsf(ay)) return "Fall";
-    if(mag>THRESH_MODERATE_G && fabsf(ax)>0.5f && fabsf(ay)>0.5f && fabsf(az)>0.5f) return "Ceiling Collapse";
+    if(mag>THRESH_SEVERE_G && az<(-1.0f) && fabsf(az)>fabsf(ax) && fabsf(az)>fabsf(ay)) return "Fall";
+    if(mag>THRESH_MODERATE_G && fabsf(ax)>(5*baseline_x) && fabsf(ay)>(5*baseline_y) && fabsf(az)>(5*baseline_z)) return "Ceiling Collapse";
     if(mag>THRESH_SEVERE_G && az>1.0f && fabsf(az)>fabsf(ax) && fabsf(az)>fabsf(ay)) return "Hard Landing";
-    if(mag>THRESH_MODERATE_G && ax>0.5f) return "Front Impact";
-    if(mag>THRESH_MODERATE_G && ax<-0.5f) return "Rear Impact";
-    if(mag>THRESH_MODERATE_G && ay>0.5f) return "Right Side Impact";
-    if(mag>THRESH_MODERATE_G && ay<-0.5f) return "Left Side Impact";
+    if(mag>THRESH_MODERATE_G && ax>(5*baseline_x)) return "Front Impact";
+    if(mag>THRESH_MODERATE_G && ax<(-5*baseline_x)) return "Rear Impact";
+    if(mag>THRESH_MODERATE_G && ay>(5*baseline_y)) return "Right Side Impact";
+    if(mag>THRESH_MODERATE_G && ay<(-5*baseline_y)) return "Left Side Impact";
     
     if(mag>THRESH_MODERATE_G) return "blunt";
     return "none";
